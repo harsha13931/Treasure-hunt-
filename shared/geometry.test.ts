@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BEAM_RANGE, MUZZLE_FORWARD, PLAYER_RADIUS } from "./config.js";
+import { BEAM_HALF_WIDTH, BEAM_RANGE, MUZZLE_FORWARD, PLAYER_RADIUS } from "./config.js";
 import { muzzlePosition, resolveVolley, traceBeam, type Target } from "./geometry.js";
 
 const origin = { x: 0, z: 0 };
@@ -10,7 +10,7 @@ describe("traceBeam", () => {
     const targets: Target[] = [{ id: "a", pos: { x: 5, z: 0 } }];
     const beam = traceBeam(origin, forward, targets);
     expect(beam.hit).toBe("a");
-    expect(beam.to.x).toBeCloseTo(5 - PLAYER_RADIUS - 0.04, 5);
+    expect(beam.to.x).toBeCloseTo(5 - PLAYER_RADIUS - BEAM_HALF_WIDTH, 5);
   });
 
   it("misses a target that is off to the side", () => {

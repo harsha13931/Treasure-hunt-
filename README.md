@@ -1,13 +1,15 @@
 # Laser Ring
 
-A multiplayer last-one-standing game. You are in a deep pit, inside a steel cage, holding a laser pistol. Everyone walks to a spot and turns to face a direction in secret. When the lights come on, all the lasers fire at once. If a beam touches you, you are out for good. The last player standing wins.
+A multiplayer last-one-standing game. You are a stick man in a deep pit, inside a steel cage, holding a laser pistol. Everyone walks to a spot and turns to face a direction in secret. When the lights come on, all the lasers fire at once. If a beam touches you, you are out for good. The last player standing wins.
 
 - **Hidden positions:** during the hide phase the server sends each player only their own position. Nobody else is drawn on your screen, and their positions are never sent to your browser until the reveal.
 - **The server decides:** the server runs the timers, the movement, every hit, and the cage. The browser only draws what it is told.
 - **One gun:** a laser pistol. The beam is a straight line that stops at the first player it touches.
 - **The cage shrinks:** if two volleys in a row end with nobody hit, the cage closes in one step and stays there. Anyone standing outside the new edge is pushed back inside.
 - **Out means out:** there are no points. A player who is hit watches the rest of the match.
-- **Works on phones:** two on-screen joysticks, one to walk and one to turn.
+- **Works on phones (landscape only):** floating joysticks that appear under your thumb, plus buttons for walking forward and back (left side) and turning left and right (right side).
+- **Everything is free:** the stick men, the pistol, the pit, the textures, and the sounds are all drawn or generated in code. There are no model, image, or audio files to license.
+- **No laser until it fires:** there is no crosshair and no aiming line. A faint arrow on the floor in front of you shows which way you face. Beams appear only when the lasers fire.
 
 ## How a match plays
 
@@ -22,9 +24,11 @@ A multiplayer last-one-standing game. You are in a deep pit, inside a steel cage
 
 | | Desktop | Phone or tablet |
 |---|---|---|
-| Walk | W A S D or the arrow keys | Left joystick |
-| Turn and aim | Mouse (click the screen first) or Q and E | Right joystick |
+| Walk | W A S D or the arrow keys | Left joystick, or the ▲ ▼ buttons on the left |
+| Turn and aim | Mouse (click the screen first) or Q and E | Right joystick, or the ◀ ▶ buttons on the right |
 | Lock in | Space or the Lock in button | Lock in button |
+
+On a phone, hold the device sideways. In portrait, the game asks you to turn it.
 
 ## Run it locally
 
@@ -67,15 +71,11 @@ Set a custom domain in your host's dashboard. The browser connects to `/ws` on t
 ## Project layout
 
 ```
-client/        Browser app: Three.js pit and cage, soldier model, joysticks, audio, menus (Vite + TypeScript)
+client/        Browser app: Three.js pit and cage, stick men, touch controls, audio, menus (Vite + TypeScript)
 server/        Node server: static files, WebSocket rooms, round state machine
 shared/        Rules, movement, beam geometry, and message types used by both sides
 Dockerfile     Production container
 ```
-
-## The character model
-
-The soldier is `client/public/models/soldier.glb`, from the three.js examples repository (a Mixamo character). **Check its license before you publish the game commercially**, or replace it with your own model. Any rigged humanoid with Mixamo bone names and `Idle` and `Walk` animations will work. Drop it in at the same path.
 
 ## Tuning
 
@@ -89,4 +89,4 @@ These are the next steps before a wide public launch:
 - Accounts, stats, and a persistent database
 - Chat, reporting, and blocking
 - Load testing with many rooms at once
-- Your own environment art and character model (these are placeholders)
+- Your own environment art, if you want something other than the pit

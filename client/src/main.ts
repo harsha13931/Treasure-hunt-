@@ -3,8 +3,7 @@ import type { Beam } from "../../shared/geometry.js";
 import { facing, stepPose, type MoveInput, type Pose } from "../../shared/movement.js";
 import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../../shared/protocol.js";
 import { Audio } from "./audio.js";
-import { loadSoldier } from "./soldier.js";
-import { Joystick } from "./touch.js";
+import { FloatingJoystick, HoldButton } from "./touch.js";
 import { World } from "./world.js";
 
 type ScreenName = "menu" | "lobby" | "game";
@@ -81,12 +80,11 @@ const ui = {
   ringRadius: byId("ring-radius"),
   phase: byId("phase"),
   timer: byId("timer"),
-  crosshair: byId("crosshair"),
   controls: byId("controls"),
   controlsHint: byId("controls-hint"),
   lock: byId<HTMLButtonElement>("lock"),
   spectating: byId("spectating"),
-  sticks: byId("sticks"),
+  touchUi: byId("touch-ui"),
   musicToggle: byId<HTMLButtonElement>("music-toggle"),
   banner: byId("banner"),
   toast: byId("toast"),
@@ -94,31 +92,23 @@ const ui = {
 
 const world = new World(ui.stage);
 const canvas = world.domElement;
-const moveStick = new Joystick(byId("stick-move"));
-const lookStick = new Joystick(byId("stick-look"));
+const moveStick = new FloatingJoystick(byId("zone-move"), byId("stick-move"));
+const lookStick = new FloatingJoystick(byId("zone-look"), byId("stick-look"));
+const forwardButton = new HoldButton(byId("btn-forward"));
+const backButton = new HoldButton(byId("btn-back"));
+const turnLeftButton = new HoldButton(byId("btn-turn-left"));
+const turnRightButton = new HoldButton(byId("btn-turn-right"));
 document.body.classList.toggle("touch", isTouchDevice);
 
 // ---------- Setup ----------
 
 ui.name.value = readSavedName();
 showScreen("menu");
-ui.create.disabled = true;
-ui.join.disabled = true;
-ui.create.textContent = "Loading…";
-
-loadSoldier()
-  .then(() => {
-    ui.create.disabled = false;
-    ui.join.disabled = false;
-    ui.create.textContent = "Create room";
-  })
-  .catch(() => {
-    ui.menuError.textContent = "Could not load the character model. Refresh the page.";
-  });
 
 ui.create.addEventListener("click", () => {
   const name = ui.name.value;
   saveName(name);
+  enterLandscape();
   connect((socket) => send({ type: "create", name }, socket));
 });
 
@@ -129,6 +119,7 @@ ui.join.addEventListener("click", () => {
     return;
   }
   saveName(ui.name.value);
+  enterLandscape();
   connect((socket) => send({ type: "join", code, name: ui.name.value }, socket));
 });
 
@@ -350,7 +341,14 @@ function onReveal(message: Extract<ServerMessage, { type: "reveal" }>): void {
     }
   }
   world.setCharacters(
-    message.players.map((p) => ({ id: p.id, x: p.x, z: p.z, yaw: p.yaw, alive: true })),
+    message.players.map((p) => ({
+      id: p.id,
+      name: p.id === state.me?.id ? undefined : p.name,
+      x: p.x,
+      z: p.z,
+      yaw: p.yaw,
+      alive: true,
+    })),
   );
   audio.playRevealChime();
   showBanner("Revealed");
@@ -392,8 +390,9 @@ function loop(now: number): void {
     if (keys.has("KeyE")) me.yaw = wrapAngle(me.yaw - KEY_TURN_SPEED * dt);
   }
   if (me && canTurn()) {
-    // Pushing the turn stick right turns right, which lowers the yaw.
-    me.yaw = wrapAngle(me.yaw - lookStick.value.x * STICK_TURN_SPEED * dt);
+    // Pushing right turns right, which lowers the yaw. The joystick and the turn buttons both count.
+    const turn = clampUnit(lookStick.value.x + axis(turnRightButton.pressed, turnLeftButton.pressed));
+    me.yaw = wrapAngle(me.yaw - turn * STICK_TURN_SPEED * dt);
   }
 
   state.accumulator += dt;
@@ -410,11 +409,11 @@ function loop(now: number): void {
     world.setPose(me.id, x, z, me.yaw);
     world.setMoving(me.id, state.moving);
     world.setView({ kind: "follow", x, z, yaw: me.yaw });
-    world.setSight({ x, z, yaw: me.yaw });
+    world.setFacingMarker({ x, z, yaw: me.yaw });
   } else {
     // Reveal, firing, and spectating all use the overview camera.
     world.setView({ kind: "overview" });
-    world.setSight(null);
+    world.setFacingMarker(null);
   }
 
   renderHud();
@@ -432,7 +431,8 @@ function stepInput(): void {
   const input: MoveInput = {
     seq: ++state.seq,
     forward: clampUnit(
-      axis(keys.has("KeyW") || keys.has("ArrowUp"), keys.has("KeyS") || keys.has("ArrowDown")) + moveStick.value.y,
+      axis(keys.has("KeyW") || keys.has("ArrowUp") || forwardButton.pressed, keys.has("KeyS") || keys.has("ArrowDown") || backButton.pressed) +
+        moveStick.value.y,
     ),
     strafe: clampUnit(
       axis(keys.has("KeyD") || keys.has("ArrowRight"), keys.has("KeyA") || keys.has("ArrowLeft")) + moveStick.value.x,
@@ -498,20 +498,20 @@ function renderHud(): void {
   const me = state.me;
   const hiding = state.phase === "HIDE" && me?.alive === true;
   ui.controls.classList.toggle("hidden", !hiding);
-  ui.crosshair.classList.toggle("hidden", !hiding);
   ui.lock.disabled = me?.locked === true;
   ui.lock.textContent = me?.locked ? "Locked in" : "Lock in";
   const controlsHelp = isTouchDevice
-    ? "Left stick walks · right stick turns"
+    ? "Left side walks · right side turns"
     : "WASD to walk · mouse to look (click the screen) · Space to lock in";
   ui.controlsHint.textContent = me?.locked ? "Locked in. Hold still until the reveal." : controlsHelp;
 
-  // The joysticks only appear while the player can still move.
-  const showSticks = isTouchDevice && hiding && me?.locked === false;
-  ui.sticks.classList.toggle("hidden", !showSticks);
-  if (!showSticks) {
-    moveStick.reset();
-    lookStick.reset();
+  // The phone controls only appear while the player can still move.
+  const showTouch = isTouchDevice && hiding && me?.locked === false;
+  ui.touchUi.classList.toggle("hidden", !showTouch);
+  if (!showTouch) {
+    for (const control of [moveStick, lookStick, forwardButton, backButton, turnLeftButton, turnRightButton]) {
+      control.reset();
+    }
   }
 
   const outOfGame = state.phase !== "LOBBY" && state.phase !== "MATCH_OVER" && (!me || !me.alive);
@@ -632,6 +632,21 @@ function axis(positive: boolean, negative: boolean): number {
 
 function clampUnit(value: number): number {
   return Math.min(1, Math.max(-1, value));
+}
+
+/** On a phone, goes full screen and locks to landscape. Browsers only allow this after a tap, and some refuse. */
+function enterLandscape(): void {
+  if (!isTouchDevice) return;
+  const lockOrientation = () => {
+    const orientation = screen.orientation as ScreenOrientation & { lock?: (type: string) => Promise<void> };
+    void orientation.lock?.("landscape").catch(() => {});
+  };
+  const request = document.documentElement.requestFullscreen?.bind(document.documentElement);
+  if (request) {
+    void request().then(lockOrientation, () => {});
+  } else {
+    lockOrientation();
+  }
 }
 
 function wrapAngle(angle: number): number {

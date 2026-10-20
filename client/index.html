@@ -68,21 +68,31 @@
           <p id="timer" class="timer">--</p>
         </div>
 
-        <div id="crosshair" class="crosshair hidden"></div>
-
         <div id="controls" class="panel controls hidden">
           <p id="controls-hint" class="hint"></p>
           <button id="lock" class="btn primary">Lock in</button>
         </div>
 
-        <div id="sticks" class="sticks hidden">
-          <div id="stick-move" class="stick" aria-label="Move stick"><div class="knob"></div><span>Move</span></div>
-          <div id="stick-look" class="stick" aria-label="Turn stick"><div class="knob"></div><span>Turn</span></div>
+        <!-- Phone controls. The joysticks float to wherever a thumb lands, and the buttons stay in the corners. -->
+        <div id="touch-ui" class="touch-ui hidden">
+          <div id="zone-move" class="zone zone-left"></div>
+          <div id="zone-look" class="zone zone-right"></div>
+          <div id="stick-move" class="stick" aria-hidden="true"><div class="knob"></div></div>
+          <div id="stick-look" class="stick" aria-hidden="true"><div class="knob"></div></div>
+          <div class="pad pad-left">
+            <button id="btn-forward" class="pad-btn" aria-label="Walk forward">▲</button>
+            <button id="btn-back" class="pad-btn" aria-label="Walk back">▼</button>
+          </div>
+          <div class="pad pad-right">
+            <button id="btn-turn-left" class="pad-btn" aria-label="Turn left">◀</button>
+            <button id="btn-turn-right" class="pad-btn" aria-label="Turn right">▶</button>
+          </div>
         </div>
 
         <p id="spectating" class="spectating hidden">You are out. Watching the last fight.</p>
       </section>
 
+      <div id="rotate" class="rotate"><p>Turn your phone sideways to play</p></div>
       <button id="music-toggle" class="chip-button" aria-pressed="false">Music off</button>
       <div id="banner" class="banner" role="status" aria-live="polite"></div>
       <div id="toast" class="toast hidden" role="alert"></div>
