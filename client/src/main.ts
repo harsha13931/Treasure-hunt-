@@ -962,6 +962,7 @@ function showScreen(name: ScreenName): void {
   }
   // Menus play over the title duel. The match itself has its own camera.
   world.setTitleScene(name !== "game");
+  audio.setScene(name === "game" ? "match" : "menu");
   if (name !== "game") audio.setIntensity(0.3);
   ui.leaveGame.classList.toggle("hidden", name !== "game");
   if (name === "online") ui.menuError.textContent = "";
@@ -1304,13 +1305,13 @@ function applySettings(): void {
 }
 
 function loadSettings(): Settings {
-  const fallback: Settings = { music: false, volume: 0.8, shake: true, voice: true, quality: "auto" };
+  const fallback: Settings = { music: true, volume: 0.8, shake: true, voice: true, quality: "auto" };
   try {
     const raw = localStorage.getItem("laser-ring:settings");
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<Settings>;
     return {
-      music: parsed.music === true,
+      music: parsed.music !== false,
       volume: typeof parsed.volume === "number" ? Math.min(1, Math.max(0, parsed.volume)) : fallback.volume,
       shake: parsed.shake !== false,
       voice: parsed.voice !== false,

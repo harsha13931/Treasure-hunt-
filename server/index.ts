@@ -77,7 +77,12 @@ const http = createServer((req, res) => {
 
   res.writeHead(200, {
     "content-type": MIME[extname(filePath)] ?? "application/octet-stream",
-    "cache-control": filePath.includes("/assets/") ? "public, max-age=31536000, immutable" : "no-cache",
+    "cache-control": filePath.includes("/assets/")
+      ? "public, max-age=31536000, immutable"
+      : // The music and the model are large and rarely change, so browsers may keep them for a day.
+        filePath.includes("/music/") || filePath.includes("/models/")
+        ? "public, max-age=86400"
+        : "no-cache",
   });
   createReadStream(filePath).pipe(res);
 });
