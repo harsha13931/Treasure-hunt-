@@ -1,12 +1,12 @@
-import { ROOM_CODE_LENGTH, ROOM_SIZE, START_RING_RADIUS, TICK_MS, type BotDifficulty } from "../../shared/config.js";
+import { PLAYER_COLORS, ROOM_CODE_LENGTH, ROOM_SIZE, START_RING_RADIUS, TICK_MS, type BotDifficulty } from "../../shared/config.js";
 import type { Beam, Kill } from "../../shared/geometry.js";
-import { activePillars } from "../../shared/obstacles.js";
 import { facing, stepPose, type MoveInput, type Pose } from "../../shared/movement.js";
 import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../../shared/protocol.js";
 import { Audio } from "./audio.js";
-import { colorFor } from "./stickman.js";
+import { assignColors, colorFor } from "./stickman.js";
 import { haptic } from "./haptics.js";
 import { FloatingJoystick, HoldButton } from "./touch.js";
+import { loadRobot } from "./robot.js";
 import { World } from "./world.js";
 
 const HUD_INTERVAL_MS = 100;
@@ -186,7 +186,8 @@ document.body.classList.toggle("touch", isTouchDevice);
 
 ui.name.value = readSavedName();
 applySettings();
-showScreen("title");
+// The title scene uses the robot, so wait for the model (a fraction of a second) before drawing it.
+void loadRobot().then(() => showScreen("title"));
 if (new URLSearchParams(location.search).has("perf")) startPerfOverlay();
 
 // The world asks for sounds, and the page plays them.
@@ -531,6 +532,7 @@ function handle(message: ServerMessage): void {
       state.hostId = message.hostId;
       state.phase = message.phase;
       state.players = message.players;
+      assignColors(message.players);
       state.startsAt = message.startsAt;
       state.isPublic = message.isPublic;
       onLobby();
@@ -619,6 +621,7 @@ function onHide(message: Extract<ServerMessage, { type: "hide" }>): void {
   state.endsAt = message.endsAt;
   state.radius = message.radius;
   state.players = message.players;
+  assignColors(message.players);
   state.revealed = [];
   world.setRing(message.radius, false);
   world.clearBeams();
@@ -650,7 +653,7 @@ function onSelf(message: Extract<ServerMessage, { type: "self" }>): void {
   state.pending = state.pending.filter((p) => p.seq > message.ack);
   let pose: Pose = { x: message.x, z: message.z, yaw: me.yaw, vx: message.vx, vz: message.vz };
   for (const pending of state.pending) {
-    pose = stepPose(pose, pending.input, DT, state.radius, activePillars(state.radius));
+    pose = stepPose(pose, pending.input, DT, state.radius);
   }
 
   const dx = pose.x - state.current.x;
@@ -805,6 +808,7 @@ function addFeed(victim: string, action: string, killers: string[]): void {
 function onMatchOver(message: Extract<ServerMessage, { type: "match_over" }>): void {
   state.phase = "MATCH_OVER";
   state.players = message.players;
+  assignColors(message.players);
   state.ranking = message.ranking;
   state.winnerId = message.winnerId;
   const wasPlaying = state.me !== null;
@@ -921,7 +925,7 @@ function stepInput(): void {
   };
   state.pending.push({ seq: input.seq, input });
   state.previous = { ...state.current };
-  state.current = { ...stepPose(state.current, input, DT, state.radius, activePillars(state.radius)), yaw: me.yaw };
+  state.current = { ...stepPose(state.current, input, DT, state.radius), yaw: me.yaw };
   state.moving = Math.hypot(state.current.vx ?? 0, state.current.vz ?? 0) > 0.5;
   send({ type: "input", ...input });
 }
@@ -978,7 +982,10 @@ function renderLobby(): void {
   ui.playerList.replaceChildren(
     ...state.players.map((player) => {
       const li = document.createElement("li");
-      li.append(textNode(player.name));
+      const dot = document.createElement("span");
+      dot.className = "color-dot";
+      dot.style.background = PLAYER_COLORS[player.color % PLAYER_COLORS.length];
+      li.append(dot, textNode(player.name));
       if (player.id === state.hostId) li.append(tag("Host", "host"));
       if (player.id === state.playerId) li.append(tag("You", "you"));
       return li;
@@ -1203,14 +1210,6 @@ function drawMinimap(): void {
   ctx.strokeStyle = "#9be4ff";
   ctx.stroke();
   ctx.restore();
-
-  ctx.fillStyle = "rgba(120, 170, 205, 0.9)";
-  for (const pillar of activePillars(state.radius)) {
-    const p = toPx(pillar.x, pillar.z);
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, pillar.r * scale, 0, Math.PI * 2);
-    ctx.fill();
-  }
 
   const dot = (x: number, z: number, color: string, radius: number) => {
     const p = toPx(x, z);

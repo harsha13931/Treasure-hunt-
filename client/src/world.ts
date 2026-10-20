@@ -15,9 +15,9 @@ import {
 } from "../../shared/config.js";
 import type { Beam } from "../../shared/geometry.js";
 import { facing } from "../../shared/movement.js";
-import { PILLARS, PILLAR_HEIGHT, type Pillar } from "../../shared/obstacles.js";
-import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { Effects } from "./effects.js";
+import type { Actor } from "./actor.js";
+import { Robot, robotReady } from "./robot.js";
 import { Stickman } from "./stickman.js";
 
 export interface CharacterState {
@@ -52,8 +52,6 @@ interface Tile {
   mesh: THREE.Mesh;
   /** Index of the floor level this piece belongs to. 0 is the outermost ring. */
   level: number;
-  /** Pieces that are not a whole floor level, like pillars, break away once the ring is smaller than this. */
-  threshold?: number;
   falling: boolean;
   delay: number;
   /** Where the piece rests while the floor is whole. */
@@ -109,8 +107,8 @@ export class World {
   private beamGroup = new THREE.Group();
   private beams: TimedBeam[] = [];
   private facingMarker: THREE.Mesh;
-  private characters = new Map<string, Stickman>();
-  private titleActors = new Map<string, Stickman>();
+  private characters = new Map<string, Actor>();
+  private titleActors = new Map<string, Actor>();
   private title: { time: number; cycle: number; fired: boolean } | null = null;
 
   private snow!: THREE.Points;
@@ -258,7 +256,7 @@ export class World {
     }
 
     this.targetRadius = radius;
-    const lost = this.tiles.filter((tile) => !tile.falling && (tile.threshold ?? this.levels[tile.level]) > radius + 0.01);
+    const lost = this.tiles.filter((tile) => !tile.falling && this.levels[tile.level] > radius + 0.01);
     if (!animate) {
       for (const tile of lost) this.removeTile(tile);
       this.shownRadius = radius;
@@ -313,7 +311,7 @@ export class World {
     for (const state of states) {
       let character = this.characters.get(state.id);
       if (!character) {
-        character = new Stickman(state.id, state.name);
+        character = makeActor(state.id, state.name);
         this.characters.set(state.id, character);
         this.scene.add(character.root);
       }
@@ -416,8 +414,8 @@ export class World {
     }
 
     this.setCharacters([]);
-    const a = new Stickman("title-a");
-    const b = new Stickman("title-b");
+    const a = makeActor("title-a");
+    const b = makeActor("title-b");
     a.setPose(-4.2, 0, Math.PI / 2);
     b.setPose(4.2, 0, -Math.PI / 2);
     this.titleActors.set("title-a", a);
@@ -437,7 +435,7 @@ export class World {
     this.renderer.domElement.remove();
   }
 
-  private actor(id: string): Stickman | undefined {
+  private actor(id: string): Actor | undefined {
     return this.characters.get(id) ?? this.titleActors.get(id);
   }
 
@@ -757,27 +755,6 @@ export class World {
       this.floorGroup.add(rim);
       this.tiles.push(this.newTile(rim, level));
     });
-
-    // Ice pillars. Each one stands until the ring closes past it, then falls with the floor.
-    const pillarMaterial = new THREE.MeshStandardMaterial({
-      color: "#d7ecfb",
-      roughness: 0.18,
-      metalness: 0.1,
-      emissive: "#4cb4e6",
-      emissiveIntensity: 0.16,
-      flatShading: true,
-    });
-    this.floorMaterials.push(pillarMaterial);
-    for (const pillar of PILLARS) {
-      const mesh = new THREE.Mesh(pillarGeometry(pillar), pillarMaterial);
-      mesh.position.set(pillar.x, PILLAR_HEIGHT / 2, pillar.z);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      this.floorGroup.add(mesh);
-      const tile = this.newTile(mesh, 0);
-      tile.threshold = Math.hypot(pillar.x, pillar.z) + pillar.r;
-      this.tiles.push(tile);
-    }
   }
 
   private newTile(mesh: THREE.Mesh, level: number): Tile {
@@ -1059,8 +1036,8 @@ export class World {
       const f = facing(this.cameraYaw);
       const rx = -f.z;
       const rz = f.x;
-      desired.set(follow.x - f.x * 7.4 + rx * 1.7, 11.5, follow.z - f.z * 7.4 + rz * 1.7);
-      look.set(follow.x + f.x * 6, 1.9, follow.z + f.z * 6);
+      desired.set(follow.x - f.x * 9.2 + rx * 2.6, 12.8, follow.z - f.z * 9.2 + rz * 2.6);
+      look.set(follow.x + f.x * 7, 1.6, follow.z + f.z * 7);
       // The follow camera tracks closely, which keeps turning from feeling floaty.
       rate = 16;
     } else if (view.kind === "title") {
@@ -1294,12 +1271,7 @@ function clamp255(value: number): number {
   return Math.min(255, Math.max(0, value));
 }
 
-/** A tapered ice pillar with a pointed top, centered on itself so it tumbles around its own middle when it falls. */
-function pillarGeometry(pillar: Pillar): THREE.BufferGeometry {
-  const body = new THREE.CylinderGeometry(pillar.r * 0.82, pillar.r, PILLAR_HEIGHT * 0.86, 7, 1).translate(0, PILLAR_HEIGHT * 0.43, 0);
-  const tip = new THREE.ConeGeometry(pillar.r * 0.82, PILLAR_HEIGHT * 0.22, 7).translate(0, PILLAR_HEIGHT * 0.86 + PILLAR_HEIGHT * 0.11, 0);
-  const merged = mergeGeometries([body, tip], false) as THREE.BufferGeometry;
-  body.dispose();
-  tip.dispose();
-  return merged.translate(0, -PILLAR_HEIGHT / 2, 0);
+/** The robot when its model has loaded, and the stick man if it could not be. */
+function makeActor(id: string, name?: string): Actor {
+  return robotReady() ? new Robot(id, name) : new Stickman(id, name);
 }

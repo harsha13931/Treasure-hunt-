@@ -1069,3 +1069,13 @@ body.touch .killfeed li {
   padding: 4px 9px;
   font-size: 0.75rem;
 }
+
+.color-dot {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 8px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  vertical-align: -1px;
+}

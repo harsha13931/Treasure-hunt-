@@ -1,19 +1,24 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { MUZZLE_FORWARD, PLAYER_HEIGHT, BEAM_HEIGHT, PIT_DEPTH } from "../../shared/config.js";
+import { MUZZLE_FORWARD, PLAYER_COLORS, PLAYER_HEIGHT, BEAM_HEIGHT, PIT_DEPTH } from "../../shared/config.js";
 
 // The figure is modelled for a 1.8 m person and scaled up to the game's height.
 const K = PLAYER_HEIGHT / 1.8;
-const GUN_TIP = 0.238; // grip to muzzle, in model units
+export const GUN_TIP = 0.238; // grip to muzzle, in model units
 const LIMB = 0.05;
 // Strong colors, so every player stands out against white snow.
-const PALETTE = ["#e5484d", "#2f7de1", "#f5a524", "#1fa971", "#8b5cf6", "#e255a1", "#0fb5b5", "#f26b21", "#c6b800", "#4f6bed"];
 
-/** A stable color for each player id, so a player keeps their color for the whole match. */
+/** Which color each player wears, as told by the server. Every player in a room has a different one. */
+const assigned = new Map<string, number>();
+
+export function assignColors(players: ReadonlyArray<{ id: string; color: number }>): void {
+  for (const player of players) assigned.set(player.id, player.color);
+}
+
+/** The color a player wears. Unknown ids (the title duel) get a fixed pair. */
 export function colorFor(id: string): string {
-  let hash = 0;
-  for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
-  return PALETTE[hash % PALETTE.length];
+  const index = assigned.get(id) ?? (id === "title-b" ? 5 : 1);
+  return PLAYER_COLORS[index % PLAYER_COLORS.length];
 }
 
 interface Leg {
@@ -291,7 +296,7 @@ function joint(radius: number, at: THREE.Vector3, material: THREE.Material): THR
 }
 
 /** A name that always faces the camera, drawn on a transparent canvas. */
-function makeLabel(text: string): THREE.Sprite {
+export function makeLabel(text: string): THREE.Sprite {
   const canvas = document.createElement("canvas");
   canvas.width = 512;
   canvas.height = 128;
@@ -312,7 +317,7 @@ function makeLabel(text: string): THREE.Sprite {
 }
 
 /** A laser pistol built from simple parts. Origin is the grip, and the barrel points along +Z. */
-function createLaserPistol(materials: THREE.Material[]): THREE.Group {
+export function createLaserPistol(materials: THREE.Material[]): THREE.Group {
   const group = new THREE.Group();
   const steel = new THREE.MeshStandardMaterial({ color: "#1c2026", roughness: 0.32, metalness: 0.85 });
   const polymer = new THREE.MeshStandardMaterial({ color: "#2b2f36", roughness: 0.7, metalness: 0.05 });

@@ -31,6 +31,8 @@ export interface PublicPlayer {
   name: string;
   alive: boolean;
   bot: boolean;
+  /** Index into PLAYER_COLORS. Unique within the room. */
+  color: number;
 }
 
 export interface RevealPlayer {

@@ -8,6 +8,7 @@ import {
   RECONNECT_GRACE_MS,
   RING_SHRINK_STEP,
   SONAR_NOISE,
+  PLAYER_COLORS,
   ROOM_SIZE,
   START_RING_RADIUS,
   TICK_MS,
@@ -433,6 +434,28 @@ describe("Room", () => {
     vi.advanceTimersByTime(REVEAL_MS + FIRE_MS + RESULT_MS + 100);
     expect(summaries).toHaveLength(1);
     expect(summaries[0]).toMatchObject({ room: "LOG01", people: 2, bots: 0, shot: 1, fell: 0, winner: "person" });
+  });
+
+  it("gives every player in a full room a different color", () => {
+    const room = new Room("COLOR");
+    const a = connect(room, "Ann");
+    room.handle(a.id, { type: "start", bots: ROOM_SIZE - 1 });
+    const players = lastOf(a, "hide")?.players ?? [];
+    expect(players).toHaveLength(ROOM_SIZE);
+    expect(new Set(players.map((p) => p.color)).size).toBe(ROOM_SIZE);
+    for (const p of players) expect(p.color).toBeLessThan(PLAYER_COLORS.length);
+  });
+
+  it("reuses a color only after its owner has left", () => {
+    const room = new Room("COLR2");
+    const a = connect(room, "Ann");
+    const b = connect(room, "Ben");
+    const colorOf = (id: string) => lastOf(a, "lobby")?.players.find((p) => p.id === id)?.color;
+    expect(colorOf(a.id)).not.toBe(colorOf(b.id));
+    const benColor = colorOf(b.id);
+    room.leave(b.id);
+    const c = connect(room, "Cy");
+    expect(colorOf(c.id)).toBe(benColor);
   });
 
   it("says who was knocked out and by whom", () => {

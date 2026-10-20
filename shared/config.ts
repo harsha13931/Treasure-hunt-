@@ -2,6 +2,12 @@
 // Units are meters.
 
 export const MIN_PLAYERS = 2;
+/**
+ * One color per seat, all easy to tell apart on white snow. A room never has more players than colors,
+ * and the server hands each player a color nobody else in the room has.
+ */
+export const PLAYER_COLORS = ["#e5484d", "#2f7de1", "#f2c230", "#2fb344", "#8b5cf6", "#ff5fb0", "#19c3d6", "#f26b21"] as const;
+
 /** A full room. Empty spots can be filled with bots up to this number. */
 export const ROOM_SIZE = 8;
 export const MAX_PLAYERS = ROOM_SIZE;
@@ -25,7 +31,7 @@ export const PLAYER_RADIUS = 1;
 export const PLAYER_HEIGHT = 4.8;
 export const WALK_SPEED = 4.6;
 /** Height of the laser beam. Also the height the gun is held at. */
-export const BEAM_HEIGHT = 3.72;
+export const BEAM_HEIGHT = 2.75;
 /** Distance from the body center to the muzzle, along the aim direction. */
 export const MUZZLE_FORWARD = 1.92;
 export const BEAM_HALF_WIDTH = 0.09;

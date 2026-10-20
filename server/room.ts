@@ -23,7 +23,6 @@ import {
 } from "../shared/config.js";
 import { resolveVolley, Shooter, Target, Vec2 } from "../shared/geometry.js";
 import { clampToRing, MoveInput, Pose, startPoseFor, stepPose } from "../shared/movement.js";
-import { activePillars, pushOutOfPillars, type Pillar } from "../shared/obstacles.js";
 import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../shared/protocol.js";
 import { BotPlan, planBot, stepBot } from "./bot.js";
 
@@ -72,6 +71,8 @@ interface Player {
   plan: BotPlan | null;
   /** Each player has one sonar ping per match. */
   sonarUsed: boolean;
+  /** Which of PLAYER_COLORS this player wears. No two players in a room share one. */
+  color: number;
   /** A secret only this player's browser knows, so no one else can take their seat when reconnecting. */
   token: string;
   /** False while the connection is down. The player's spot is held for a while. */
@@ -299,6 +300,14 @@ export class Room {
     }
   }
 
+  /** The lowest color not worn by anyone in the room. */
+  private freeColor(): number {
+    const used = new Set([...this.players.values()].map((player) => player.color));
+    let color = 0;
+    while (used.has(color)) color += 1;
+    return color;
+  }
+
   private newPlayer(id: string, name: string, send: Send, bot: boolean): Player {
     return {
       id,
@@ -312,6 +321,7 @@ export class Room {
       ack: 0,
       plan: null,
       sonarUsed: false,
+      color: this.freeColor(),
       token: randomBytes(12).toString("hex"),
       connected: true,
       dropTimer: null,
@@ -337,10 +347,7 @@ export class Room {
       player.ack = 0;
       player.plan = null;
       player.sonarUsed = false;
-      const spot = this.spawn(index, all.length);
-      // Nobody starts inside a pillar.
-      const out = pushOutOfPillars(spot.x, spot.z, activePillars(START_RING_RADIUS));
-      player.pose = { ...spot, x: out.x, z: out.z };
+      player.pose = this.spawn(index, all.length);
     });
     this.matchStartedAt = Date.now();
     this.tally = { shot: 0, fell: 0, sonar: 0, bots: botCount, people: all.length - botCount };
@@ -369,7 +376,7 @@ export class Room {
     for (const player of this.livingPlayers()) {
       player.locked = false;
       player.queue = [];
-      player.plan = player.bot ? planBot(this.botPlanRadius(), known, quick, Date.now(), this.botSkill, Math.random, this.pillars()) : null;
+      player.plan = player.bot ? planBot(this.botPlanRadius(), known, quick, Date.now(), this.botSkill) : null;
     }
 
     this.sendHideToAll();
@@ -394,12 +401,12 @@ export class Room {
     for (const player of this.livingPlayers()) {
       if (!player.locked) {
         if (player.bot && player.plan) {
-          player.pose = stepBot(player.pose, player.plan, this.radius, TICK_MS / 1000, this.pillars());
+          player.pose = stepBot(player.pose, player.plan, this.radius, TICK_MS / 1000);
           if (now >= player.plan.lockAt) player.locked = true;
         } else {
           const input = player.queue.shift();
           if (input) {
-            player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.radius, this.pillars());
+            player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.radius);
             player.ack = input.seq;
           }
         }
@@ -413,7 +420,7 @@ export class Room {
   private lockPlayer(player: Player, yaw: number): void {
     while (player.queue.length > 0) {
       const input = player.queue.shift() as MoveInput;
-      player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.radius, this.pillars());
+      player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.radius);
       player.ack = input.seq;
     }
     // Locking in means standing still, so the player stops dead.
@@ -471,7 +478,7 @@ export class Room {
     const shooters: Shooter[] = living.map((player) => ({ id: player.id, pos: player.pose, yaw: player.pose.yaw }));
     const targets: Target[] = living.map((player) => ({ id: player.id, pos: player.pose }));
 
-    const { beams, eliminated, kills } = resolveVolley(shooters, targets, this.pillars());
+    const { beams, eliminated, kills } = resolveVolley(shooters, targets);
     for (const id of eliminated) {
       const player = this.players.get(id);
       if (player) player.alive = false;
@@ -526,11 +533,6 @@ export class Room {
     const bearing = truth + (Math.random() * 2 - 1) * SONAR_NOISE;
     player.send({ type: "sonar_result", bearing, band: best < SONAR_NEAR ? "near" : best < SONAR_MID ? "mid" : "far" });
     nearest.send({ type: "sonar_alert" });
-  }
-
-  /** The ice pillars still standing at the current ring size. */
-  private pillars(): Pillar[] {
-    return activePillars(this.radius);
   }
 
   /** The radius the floor will have after the next shrink. */
@@ -677,6 +679,7 @@ export class Room {
       name: player.name,
       alive: player.alive,
       bot: player.bot,
+      color: player.color,
     }));
   }
 
