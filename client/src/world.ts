@@ -30,6 +30,8 @@ export interface CharacterState {
 
 export type CameraView =
   | { kind: "follow"; x: number; z: number; yaw: number }
+  /** Watch a living player from behind, as a spectator. */
+  | { kind: "spectate"; id: string }
   | { kind: "overview" }
   | { kind: "title" };
 
@@ -130,6 +132,7 @@ export class World {
   /** Which way the follow camera looks. It trails the player's real facing a little, so turning feels calm. */
   private cameraYaw = 0;
   private followActive = false;
+  private followPose = { x: 0, z: 0, yaw: 0 };
   private danger: THREE.Group | null = null;
   /** Reused every frame, so the render loop creates no garbage. */
   private scratch = {
@@ -1014,21 +1017,34 @@ export class World {
     const { desired, look, center } = this.scratch;
     let rate: number;
 
+    let follow: { x: number; z: number; yaw: number } | null = null;
     if (view.kind === "follow") {
+      follow = view;
+    } else if (view.kind === "spectate") {
+      const target = this.characters.get(view.id);
+      if (target?.isAlive) {
+        follow = this.followPose;
+        follow.x = target.root.position.x;
+        follow.z = target.root.position.z;
+        follow.yaw = target.root.rotation.y;
+      }
+    }
+
+    if (follow) {
       // The camera swings after the player's facing instead of locking to it, so a fast turn does not whip the view.
       if (!this.followActive) {
-        this.cameraYaw = view.yaw;
+        this.cameraYaw = follow.yaw;
         this.followActive = true;
       }
-      const gap = Math.atan2(Math.sin(view.yaw - this.cameraYaw), Math.cos(view.yaw - this.cameraYaw));
+      const gap = Math.atan2(Math.sin(follow.yaw - this.cameraYaw), Math.cos(follow.yaw - this.cameraYaw));
       this.cameraYaw += gap * (1 - Math.exp(-dt * CAMERA_TURN_RATE));
 
       // Behind and above the player, looking down at them and the way the gun points.
       const f = facing(this.cameraYaw);
       const rx = -f.z;
       const rz = f.x;
-      desired.set(view.x - f.x * 7.4 + rx * 1.7, 11.5, view.z - f.z * 7.4 + rz * 1.7);
-      look.set(view.x + f.x * 6, 1.9, view.z + f.z * 6);
+      desired.set(follow.x - f.x * 7.4 + rx * 1.7, 11.5, follow.z - f.z * 7.4 + rz * 1.7);
+      look.set(follow.x + f.x * 6, 1.9, follow.z + f.z * 6);
       // The follow camera tracks closely, which keeps turning from feeling floaty.
       rate = 16;
     } else if (view.kind === "title") {

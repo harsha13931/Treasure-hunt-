@@ -211,7 +211,14 @@
           </div>
         </div>
 
-        <p id="spectating" class="spectating hidden">You are out. Watching the rest of the match.</p>
+        <div id="spectating" class="spectating hidden">
+          <button id="spec-prev" class="btn ghost spec-btn" aria-label="Watch the previous player">◀</button>
+          <div class="spec-label">
+            <strong id="spec-name">Watching the match</strong>
+            <span id="spec-hint">You are out. Switch players with ◀ ▶ or Q E.</span>
+          </div>
+          <button id="spec-next" class="btn ghost spec-btn" aria-label="Watch the next player">▶</button>
+        </div>
       </section>
 
       <div id="rotate" class="rotate"><p>Turn your phone sideways to play</p></div>

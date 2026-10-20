@@ -79,6 +79,8 @@ const state = {
   /** The last solo setup, so Play Again can repeat it. */
   lastSolo: null as SoloSettings | null,
   showResults: false,
+  /** The player an eliminated spectator is watching. */
+  spectateId: null as string | null,
 };
 
 const keys = new Set<string>();
@@ -142,6 +144,10 @@ const ui = {
   controlsHint: byId("controls-hint"),
   lock: byId<HTMLButtonElement>("lock"),
   spectating: byId("spectating"),
+  specPrev: byId<HTMLButtonElement>("spec-prev"),
+  specNext: byId<HTMLButtonElement>("spec-next"),
+  specName: byId("spec-name"),
+  specHint: byId("spec-hint"),
   touchUi: byId("touch-ui"),
   musicToggle: byId<HTMLButtonElement>("music-toggle"),
   leaveGame: byId<HTMLButtonElement>("leave-game"),
@@ -321,7 +327,14 @@ window.addEventListener("keydown", (event) => {
   if (isGameKey(event.code)) event.preventDefault();
   keys.add(event.code);
   if (event.code === "Space" && !event.repeat) lockIn();
+  // Eliminated players use the turn keys to flip between the people still playing.
+  if (state.screen === "game" && state.me?.alive !== true && !event.repeat) {
+    if (event.code === "KeyQ" || event.code === "ArrowLeft") cycleSpectate(-1);
+    if (event.code === "KeyE" || event.code === "ArrowRight") cycleSpectate(1);
+  }
 });
+ui.specPrev.addEventListener("click", () => cycleSpectate(-1));
+ui.specNext.addEventListener("click", () => cycleSpectate(1));
 window.addEventListener("keyup", (event) => keys.delete(event.code));
 window.addEventListener("blur", () => keys.clear());
 
@@ -716,8 +729,9 @@ function loop(now: number): void {
     world.setView({ kind: "title" });
     world.setFacingMarker(null);
   } else {
-    // Reveal, firing, and spectating use the overview camera, which zooms in on whoever is alive.
-    world.setView({ kind: "overview" });
+    // Reveal and firing use the overview camera. An eliminated player follows the player they picked.
+    const watched = spectateTarget();
+    world.setView(watched ? { kind: "spectate", id: watched } : { kind: "overview" });
     world.setFacingMarker(null);
   }
 
@@ -922,6 +936,49 @@ function renderHud(): void {
   const inMatch = state.screen === "game";
   const outOfGame = inMatch && state.phase !== "LOBBY" && state.phase !== "MATCH_OVER" && (!me || !me.alive);
   ui.spectating.classList.toggle("hidden", !outOfGame);
+  if (outOfGame) {
+    const watched = spectateTarget();
+    const others = spectatable().length;
+    setText(ui.specName, watched ? `Watching ${nameOf(watched)}` : "Watching the match");
+    setText(
+      ui.specHint,
+      state.phase === "HIDE"
+        ? "Everyone is hiding their spots. You can follow a player once they are revealed."
+        : others > 1
+          ? "You are out. Switch players with ◀ ▶ or Q E."
+          : "You are out. Watching the rest of the match.",
+    );
+    ui.specPrev.disabled = ui.specNext.disabled = others < 2;
+  }
+}
+
+/** Living players an eliminated spectator can follow. Positions are only public after the reveal. */
+function spectatable(): string[] {
+  if (state.phase === "HIDE") return [];
+  return state.revealed
+    .filter((p) => p.id !== state.playerId && state.players.find((q) => q.id === p.id)?.alive)
+    .map((p) => p.id);
+}
+
+/** Who the spectator is watching now. Moves on by itself when that player is knocked out. */
+function spectateTarget(): string | null {
+  if (state.me?.alive) return null;
+  const list = spectatable();
+  if (list.length === 0) {
+    state.spectateId = null;
+  } else if (!state.spectateId || !list.includes(state.spectateId)) {
+    state.spectateId = list[0];
+  }
+  return state.spectateId;
+}
+
+function cycleSpectate(direction: 1 | -1): void {
+  const list = spectatable();
+  if (list.length < 2) return;
+  const index = state.spectateId ? list.indexOf(state.spectateId) : -1;
+  state.spectateId = list[(index + direction + list.length) % list.length];
+  audio.playClick();
+  renderHud();
 }
 
 /** Sets an element's text only when it changed, so an unchanged HUD costs nothing. */
