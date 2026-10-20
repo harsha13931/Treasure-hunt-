@@ -2,31 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="description" content="Laser Ring: a multiplayer duel where positions stay hidden until the reveal." />
-    <meta name="theme-color" content="#050816" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="description" content="Laser Ring: last one standing in a shrinking ring." />
+    <meta name="theme-color" content="#15130f" />
     <title>Laser Ring</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <div id="stage" aria-hidden="true"></div>
+    <div id="stage"></div>
 
     <main id="app">
-      <!-- Menu: name, gun choice, create or join a room -->
+      <!-- Menu: name, then create or join a room -->
       <section id="menu" class="panel screen">
         <h1 class="title">Laser Ring</h1>
-        <p class="tagline">Hide your seat. Aim true. Strike when the lights come on.</p>
+        <p class="tagline">Walk the ring. Hold still. Fire on the reveal. Last one standing wins.</p>
 
         <label class="field">
           <span>Your name</span>
           <input id="name" maxlength="16" autocomplete="nickname" placeholder="Player" />
         </label>
-
-        <div class="field">
-          <span>Choose your gun</span>
-          <div id="menu-guns" class="gun-grid"></div>
-        </div>
 
         <div class="row">
           <button id="create" class="btn primary">Create room</button>
@@ -42,21 +37,16 @@
         <p id="menu-error" class="error" role="alert"></p>
       </section>
 
-      <!-- Lobby: room code, players, host start button -->
+      <!-- Lobby: room code, players, host starts -->
       <section id="lobby" class="panel screen hidden">
         <p class="eyebrow">Room code</p>
         <button id="room-code" class="room-code" title="Copy room code"></button>
-        <p class="hint">Share this code with friends. They can join from the menu.</p>
+        <p class="hint">Share this code. Friends join from the menu.</p>
 
         <p id="lobby-result" class="result hidden"></p>
 
         <h2 class="section-title">Players <span id="player-count"></span></h2>
         <ul id="player-list" class="player-list"></ul>
-
-        <div class="field">
-          <span>Your gun</span>
-          <div id="lobby-guns" class="gun-grid"></div>
-        </div>
 
         <div class="row">
           <button id="start" class="btn primary">Start match</button>
@@ -65,28 +55,32 @@
         <p id="lobby-note" class="hint"></p>
       </section>
 
-      <!-- In-game HUD: timer, phase, scoreboard, aim and lock controls -->
+      <!-- In-match HUD -->
       <section id="game" class="screen hidden">
-        <header class="hud-top">
-          <div class="hud-chip" id="hud-round">Round 1</div>
-          <div class="hud-timer" id="timer">--</div>
-          <div class="hud-chip" id="hud-alive">0 alive</div>
-        </header>
+        <canvas id="minimap" width="220" height="220" aria-label="Map of the ring"></canvas>
+        <div class="stats">
+          <div class="stat"><span id="alive-count">0</span> alive</div>
+          <div class="stat">Ring <span id="ring-radius">--</span> m</div>
+        </div>
 
-        <p id="hud-phase" class="phase"></p>
+        <div class="top-center">
+          <p id="phase" class="phase"></p>
+          <p id="timer" class="timer">--</p>
+        </div>
 
-        <aside id="scoreboard" class="panel scoreboard" aria-label="Scoreboard"></aside>
+        <div id="crosshair" class="crosshair hidden"></div>
 
         <div id="controls" class="panel controls hidden">
           <p id="controls-hint" class="hint"></p>
-          <label class="aim">
-            <span>Aim <strong id="aim-value">0°</strong></span>
-            <input id="aim" type="range" min="0" max="359" step="1" value="0" />
-          </label>
           <button id="lock" class="btn primary">Lock in</button>
         </div>
 
-        <p id="spectating" class="spectating hidden">You are out. Watching the rest of the round.</p>
+        <div id="sticks" class="sticks hidden">
+          <div id="stick-move" class="stick" aria-label="Move stick"><div class="knob"></div><span>Move</span></div>
+          <div id="stick-look" class="stick" aria-label="Turn stick"><div class="knob"></div><span>Turn</span></div>
+        </div>
+
+        <p id="spectating" class="spectating hidden">You are out. Watching the last fight.</p>
       </section>
 
       <button id="music-toggle" class="chip-button" aria-pressed="false">Music off</button>

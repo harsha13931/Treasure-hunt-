@@ -4,14 +4,15 @@ import { createServer } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
-import { GUN_IDS, GunId, ROOM_CODE_LENGTH } from "../shared/config.js";
+import { ROOM_CODE_LENGTH } from "../shared/config.js";
 import type { ClientMessage, ServerMessage } from "../shared/protocol.js";
 import { encode } from "../shared/protocol.js";
 import { Room } from "./room.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const CLIENT_DIR = resolve(fileURLToPath(new URL("../dist/client", import.meta.url)));
-const MAX_MESSAGES_PER_SECOND = 30;
+// The browser sends movement at 20 messages per second, so leave room for that plus a few actions.
+const MAX_MESSAGES_PER_SECOND = 60;
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 const rooms = new Map<string, Room>();
@@ -23,6 +24,7 @@ const MIME: Record<string, string> = {
   ".json": "application/json",
   ".glb": "model/gltf-binary",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
 };
@@ -77,11 +79,9 @@ wss.on("connection", (socket: WebSocket) => {
   const send = (message: ServerMessage) => {
     if (socket.readyState === socket.OPEN) socket.send(encode(message));
   };
-
   const fail = (message: string) => send({ type: "error", message });
 
   socket.on("message", (raw) => {
-    // Simple per-connection rate limit: at most MAX_MESSAGES_PER_SECOND each second.
     const now = Date.now();
     if (now - windowStart >= 1000) {
       windowStart = now;
@@ -104,17 +104,15 @@ wss.on("connection", (socket: WebSocket) => {
       fail("Malformed message.");
       return;
     }
-
-    const msg = message as ClientMessage & { type: string };
+    const msg = message as ClientMessage;
 
     if (!room) {
       if (msg.type === "create") {
-        const gun = pickGun(msg.gun);
         const code = newRoomCode();
-        const newRoom = new Room(code);
-        rooms.set(code, newRoom);
-        room = newRoom;
-        playerId = newRoom.join(readName(msg.name), gun, send);
+        const created = new Room(code);
+        rooms.set(code, created);
+        room = created;
+        playerId = created.join(readName(msg.name), send);
       } else if (msg.type === "join") {
         const code = typeof msg.code === "string" ? msg.code.trim().toUpperCase() : "";
         const found = rooms.get(code);
@@ -123,7 +121,7 @@ wss.on("connection", (socket: WebSocket) => {
           return;
         }
         try {
-          playerId = found.join(readName(msg.name), pickGun(msg.gun), send);
+          playerId = found.join(readName(msg.name), send);
           room = found;
         } catch (error) {
           fail(error instanceof Error ? error.message : "Could not join.");
@@ -154,10 +152,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readName(value: unknown): string {
   return typeof value === "string" ? value : "";
-}
-
-function pickGun(value: unknown): GunId {
-  return typeof value === "string" && (GUN_IDS as string[]).includes(value) ? (value as GunId) : "pistol";
 }
 
 http.listen(PORT, () => {

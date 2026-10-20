@@ -1,74 +1,36 @@
-// Game constants shared by the server and the client.
-// Units are world units; the ring has radius RING_RADIUS.
+// Game rules and tuning values shared by the server and the browser.
+// Units are meters.
 
-export const RING_RADIUS = 10;
-export const SEAT_COUNT = 24;
-export const PLAYER_RADIUS = 0.45;
-export const GUN_LENGTH = 0.9;
 export const MIN_PLAYERS = 2;
 export const MAX_PLAYERS = 12;
-export const ROUNDS_PER_MATCH = 5;
-export const HIDE_MS = 20_000;
-export const REVEAL_MS = 3_000;
-export const FIRE_MS = 1_500;
-export const RESULT_MS = 2_500;
-export const ROUND_BREAK_MS = 4_000;
 export const ROOM_CODE_LENGTH = 5;
+/** Server simulation step. The browser predicts with the same step. */
+export const TICK_MS = 50;
 
-export type GunId = "pistol" | "sniper" | "shotgun" | "twin";
+// The circle the players must stay inside. It shrinks in steps.
+export const START_RING_RADIUS = 12;
+export const RING_SHRINK_STEP = 2;
+export const MIN_RING_RADIUS = 3.5;
+/** After this many volleys in a row with no kill, the ring shrinks one step. */
+export const NO_KILL_VOLLEYS_BEFORE_SHRINK = 2;
 
-export interface GunSpec {
-  id: GunId;
-  name: string;
-  /** Angles (degrees) of each beam relative to the aim direction. */
-  spreadDeg: number[];
-  /** Half-width of each beam; bigger means easier to hit. */
-  beamHalfWidth: number;
-  /** Maximum distance a beam travels from the muzzle. */
-  range: number;
-  /** Accent color used for the gun and its laser. */
-  color: string;
-  /** One line shown in the gun picker. */
-  blurb: string;
-}
+// Players and the laser pistol.
+export const PLAYER_RADIUS = 0.5;
+export const PLAYER_HEIGHT = 2.2;
+export const WALK_SPEED = 2.8;
+/** Height of the laser beam. Also the height the gun is held at. */
+export const BEAM_HEIGHT = 1.7;
+/** Distance from the body center to the muzzle, along the aim direction. */
+export const MUZZLE_FORWARD = 0.95;
+export const BEAM_HALF_WIDTH = 0.04;
+export const BEAM_RANGE = 80;
 
-export const GUNS: Record<GunId, GunSpec> = {
-  pistol: {
-    id: "pistol",
-    name: "Pistol",
-    spreadDeg: [0],
-    beamHalfWidth: 0.12,
-    range: 30,
-    color: "#38bdf8",
-    blurb: "Balanced. One beam, medium width.",
-  },
-  sniper: {
-    id: "sniper",
-    name: "Sniper",
-    spreadDeg: [0],
-    beamHalfWidth: 0.03,
-    range: 30,
-    color: "#a3e635",
-    blurb: "Pinpoint. A thin beam that is hard to land.",
-  },
-  shotgun: {
-    id: "shotgun",
-    name: "Shotgun",
-    spreadDeg: [-16, -8, 0, 8, 16],
-    beamHalfWidth: 0.2,
-    range: 9,
-    color: "#fb923c",
-    blurb: "Five pellets. Deadly, but only up close.",
-  },
-  twin: {
-    id: "twin",
-    name: "Twin",
-    spreadDeg: [-3, 3],
-    beamHalfWidth: 0.1,
-    range: 30,
-    color: "#e879f9",
-    blurb: "Two beams fanned slightly apart.",
-  },
-};
+// Phase timings.
+export const HIDE_MS = 30_000;
+export const REVEAL_MS = 3_000;
+export const FIRE_MS = 1_200;
+export const RESULT_MS = 2_500;
 
-export const GUN_IDS = Object.keys(GUNS) as GunId[];
+// The pit the match is played in. The cage (the ring) shrinks inside it.
+export const PIT_RADIUS = 26;
+export const PIT_WALL_HEIGHT = 18;
