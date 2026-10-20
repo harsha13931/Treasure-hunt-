@@ -4,7 +4,7 @@ A multiplayer last-one-standing game. You are a stick man on a circle of ice in 
 
 ## Ways to play
 
-From the main menu choose **Play**, then:
+The game opens on a **Start Game** screen. Tap it, then choose **Play Game** from the main menu, then:
 
 - **Solo vs Bots:** play right away against computer players. You choose how many bots (1 to 7) and how hard they are (Easy, Normal, Hard).
 - **Play Online, Quick Match:** join a public match with real people. The match starts by itself a few seconds after a second player joins. The host of the room can also add bots.
@@ -23,6 +23,7 @@ A match needs **at least 2 players in total**, bots included, and holds up to 8.
 ## Features
 
 - **Snow world:** an open snowfield with mountains and pine trees, snow falling from above, and the arena as a circle of ice over a deep crevasse.
+- **Steady frame rate:** one animation loop updates and draws; resolution adapts to the device if frames run long; bloom only runs while lasers are on screen; stick men are merged into a handful of meshes. Add `?perf=1` to the address to see fps, draw calls and resolution.
 - **Smooth movement:** you speed up and slow down like a person, and your own movement is predicted in the browser so it never waits on the network.
 - **A real-game feel:** a title screen where two stick men face off and one shoots the other, muzzle flashes, thin glowing lasers, a red burst when someone is hit, falling and recoil animations, camera shake, footsteps, and sound effects for shots, hits, and the floor breaking away.
 - **Works on phones (landscape only):** floating joysticks that appear under your thumb, plus buttons for walking forward and back (left side) and turning left and right (right side).

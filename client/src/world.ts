@@ -61,6 +61,7 @@ const CAGE_HEIGHT = 9;
 const CAGE_CLOSE_SPEED = 3.2; // meters per second that the cage closes in
 const CAGE_CLOSE_DELAY = 0.7; // seconds the cage waits while the floor breaks away
 const SLAB_THICKNESS = 0.9;
+const MIN_PIXEL_RATIO = 0.7;
 const SNOW_RADIUS = 95;
 const SNOW_HEIGHT = 75;
 const BEAM_GROW_MS = 140;
@@ -115,10 +116,31 @@ export class World {
   private shakeAmount = 0;
   private resizeObserver: ResizeObserver;
 
+  // Performance. The resolution lowers itself when the device cannot keep up, and recovers when it can.
+  private maxPixelRatio = 1;
+  private pixelRatio = 1;
+  private frameAverage = 1 / 60;
+  private adaptTimer = 0;
+  private slowSeconds = 0;
+  private lowPower = false;
+  private sun!: THREE.DirectionalLight;
+  private fallingCount = 0;
+  /** Reused every frame, so the render loop creates no garbage. */
+  private scratch = {
+    desired: new THREE.Vector3(),
+    look: new THREE.Vector3(),
+    center: new THREE.Vector3(),
+    shake: new THREE.Vector3(),
+  };
+
   constructor(private host: HTMLElement) {
     // Post-processing bypasses the canvas's own anti-aliasing, so the render target is multisampled instead.
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.maxPixelRatio = Math.min(window.devicePixelRatio, this.touchDevice ? 1.5 : 1.75);
+    this.pixelRatio = this.maxPixelRatio;
+    this.renderer.setPixelRatio(this.pixelRatio);
+    // The renderer counts a whole frame, not just its last pass, so the stats are meaningful.
+    this.renderer.info.autoReset = false;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -156,7 +178,11 @@ export class World {
       [CAGE_HEIGHT * 0.5, steel],
       [CAGE_HEIGHT, topRail],
     ] as const) {
-      const ring = new THREE.Mesh(new THREE.BufferGeometry(), material);
+      // Built once at the full size. Closing the cage scales it, so no geometry is rebuilt while playing.
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(START_RING_RADIUS, material === topRail ? 0.2 : 0.14, 10, 160).rotateX(Math.PI / 2),
+        material,
+      );
       ring.position.y = y;
       ring.castShadow = true;
       ring.frustumCulled = false;
@@ -193,8 +219,6 @@ export class World {
     this.resizeObserver.observe(this.host);
     this.resize();
     this.applyRadius(START_RING_RADIUS);
-
-    this.renderer.setAnimationLoop(() => this.frame());
   }
 
   get domElement(): HTMLCanvasElement {
@@ -226,6 +250,7 @@ export class World {
       return;
     }
 
+    this.fallingCount += lost.length;
     for (const tile of lost) {
       tile.falling = true;
       tile.delay = Math.random() * 0.8;
@@ -375,7 +400,6 @@ export class World {
   }
 
   dispose(): void {
-    this.renderer.setAnimationLoop(null);
     this.resizeObserver.disconnect();
     for (const character of this.characters.values()) character.dispose();
     this.characters.clear();
@@ -476,6 +500,7 @@ export class World {
 
     this.scene.add(new THREE.HemisphereLight("#d3e3f4", "#9fb2c6", 1.05));
     const sun = new THREE.DirectionalLight("#fff1dc", 2.4);
+    this.sun = sun;
     sun.position.set(-45, 62, 32);
     sun.castShadow = true;
     const shadowSize = this.touchDevice ? 1024 : 2048;
@@ -592,8 +617,8 @@ export class World {
       dummy.updateMatrix();
       snowTops.setMatrixAt(i, dummy.matrix);
     }
+    // The trees are far from the arena, so their shadows never reach it. Skipping them saves a lot of drawing.
     for (const mesh of [trunks, ...layers, snowTops]) {
-      mesh.castShadow = true;
       this.scene.add(mesh);
     }
   }
@@ -691,8 +716,8 @@ export class World {
         geometry.translate(-middle.x, -middle.y, -middle.z);
         const mesh = new THREE.Mesh(geometry, material);
         mesh.position.copy(middle);
+        // Flat slabs do not need to cast shadows on anything.
         mesh.receiveShadow = true;
-        mesh.castShadow = true;
         this.floorGroup.add(mesh);
         this.tiles.push(this.newTile(mesh, level));
       }
@@ -719,12 +744,13 @@ export class World {
   }
 
   private removeTile(tile: Tile): void {
+    if (tile.falling) this.fallingCount -= 1;
     this.floorGroup.remove(tile.mesh);
     tile.mesh.geometry.dispose();
     this.tiles = this.tiles.filter((candidate) => candidate !== tile);
   }
 
-  /** Rebuilds the cage for a radius. */
+  /** Moves the cage bars and sizes the rails for a radius. Cheap enough to run every frame. */
   private applyRadius(radius: number): void {
     this.shownRadius = radius;
 
@@ -736,26 +762,32 @@ export class World {
     }
     this.cageBars.instanceMatrix.needsUpdate = true;
 
-    this.cageRings.forEach((ring, index) => {
-      ring.geometry.dispose();
-      ring.geometry = new THREE.TorusGeometry(radius, index === 2 ? 0.16 : 0.12, 10, 160).rotateX(Math.PI / 2);
-    });
+    const scale = radius / START_RING_RADIUS;
+    for (const ring of this.cageRings) ring.scale.set(scale, 1, scale);
   }
 
   private resize(): void {
     const width = this.host.clientWidth || window.innerWidth;
     const height = this.host.clientHeight || window.innerHeight;
+    this.renderer.setPixelRatio(this.pixelRatio);
+    this.composer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(width, height, false);
     this.composer.setSize(width, height);
-    this.bloom.setSize(width, height);
+    this.bloom.setSize(width * this.pixelRatio, height * this.pixelRatio);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
   }
 
-  private frame(): void {
+  /**
+   * Draws one frame. The page calls this once per animation frame, after it has updated its own state,
+   * so the picture always shows the latest positions and camera.
+   */
+  render(): void {
     const dt = Math.min(0.1, this.clock.getDelta());
     const now = performance.now();
+    this.renderer.info.reset();
 
+    this.adaptQuality(dt);
     this.updateTitle(dt);
     this.updateSnow(dt, now / 1000);
     this.updateFloor(dt);
@@ -766,14 +798,71 @@ export class World {
 
     this.updateCamera(dt);
     // Shake is applied for this frame only, so it never builds up in the camera's real position.
-    const shakeOffset = new THREE.Vector3();
+    const shake = this.scratch.shake.set(0, 0, 0);
     if (this.shakeEnabled && this.shakeAmount > 0.01) {
-      shakeOffset.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(this.shakeAmount * 0.35);
-      this.camera.position.add(shakeOffset);
+      shake.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(this.shakeAmount * 0.35);
+      this.camera.position.add(shake);
       this.shakeAmount *= Math.exp(-dt * 6);
     }
+
+    // Bloom only matters while lasers are on screen, and it is the most expensive effect, so it sleeps otherwise.
+    this.bloom.enabled = !this.touchDevice && !this.lowPower && this.beams.length > 0;
     this.composer.render();
-    this.camera.position.sub(shakeOffset);
+    this.camera.position.sub(shake);
+  }
+
+  /** Frame rate, draw calls, and resolution, for the optional on-screen readout. */
+  stats(): { fps: number; frameMs: number; drawCalls: number; triangles: number; pixelRatio: number; lowPower: boolean } {
+    return {
+      fps: 1 / this.frameAverage,
+      frameMs: this.frameAverage * 1000,
+      drawCalls: this.renderer.info.render.calls,
+      triangles: this.renderer.info.render.triangles,
+      pixelRatio: this.pixelRatio,
+      lowPower: this.lowPower,
+    };
+  }
+
+  /**
+   * Keeps the game smooth on any device. If frames are taking too long, the picture is drawn at a slightly
+   * lower resolution until they are fast again. If it is still too slow at the lowest resolution,
+   * shadows, bloom, and part of the snow are turned off too.
+   */
+  private adaptQuality(dt: number): void {
+    if (document.hidden) return;
+    this.frameAverage += (dt - this.frameAverage) * 0.06;
+    this.adaptTimer += dt;
+    if (this.adaptTimer < 1) return;
+    this.adaptTimer = 0;
+
+    const slow = this.frameAverage > 1 / 42;
+    const fast = this.frameAverage < 1 / 56;
+    if (slow) {
+      if (this.pixelRatio > MIN_PIXEL_RATIO + 0.01) {
+        this.setPixelRatio(Math.max(MIN_PIXEL_RATIO, this.pixelRatio * 0.85));
+        this.slowSeconds = 0;
+      } else if (++this.slowSeconds >= 2) {
+        this.setLowPower(true);
+      }
+    } else if (fast) {
+      this.slowSeconds = 0;
+      if (this.pixelRatio < this.maxPixelRatio - 0.01) {
+        this.setPixelRatio(Math.min(this.maxPixelRatio, this.pixelRatio * 1.06));
+      } else if (this.lowPower) {
+        this.setLowPower(false);
+      }
+    }
+  }
+
+  private setPixelRatio(ratio: number): void {
+    this.pixelRatio = ratio;
+    this.resize();
+  }
+
+  private setLowPower(on: boolean): void {
+    this.lowPower = on;
+    this.sun.castShadow = !on;
+    this.snow.geometry.setDrawRange(0, on ? Math.floor(this.snowSpeed.length * 0.4) : this.snowSpeed.length);
   }
 
   /** The cage closes in after the floor breaks away, and the broken slabs fall into the pit. */
@@ -791,7 +880,8 @@ export class World {
       }
     }
 
-    for (const tile of [...this.tiles]) {
+    if (this.fallingCount === 0) return;
+    for (const tile of this.tiles.slice()) {
       if (!tile.falling) continue;
       if (tile.delay > 0) {
         // The slab shudders before it lets go.
@@ -862,40 +952,48 @@ export class World {
 
   private updateCamera(dt: number): void {
     const view = this.view;
-    let desired: THREE.Vector3;
-    let look: THREE.Vector3;
+    const { desired, look, center } = this.scratch;
     let rate: number;
 
     if (view.kind === "follow") {
       // Behind and above the player, looking down at them and the way the gun points.
       const f = facing(view.yaw);
-      const right = { x: -f.z, z: f.x };
-      desired = new THREE.Vector3(view.x - f.x * 7.4 + right.x * 1.7, 11.5, view.z - f.z * 7.4 + right.z * 1.7);
-      look = new THREE.Vector3(view.x + f.x * 6, 1.9, view.z + f.z * 6);
+      const rx = -f.z;
+      const rz = f.x;
+      desired.set(view.x - f.x * 7.4 + rx * 1.7, 11.5, view.z - f.z * 7.4 + rz * 1.7);
+      look.set(view.x + f.x * 6, 1.9, view.z + f.z * 6);
       // The follow camera tracks closely, which keeps turning from feeling floaty.
       rate = 16;
     } else if (view.kind === "title") {
       // A slow sweep around the two duelists. The menu sits on the left, so they sit right of center.
       const sweep = Math.PI / 2 + Math.sin(performance.now() * 0.00028) * 0.55;
-      desired = new THREE.Vector3(Math.cos(sweep) * 17, 5.2, Math.sin(sweep) * 17);
-      const shift = this.camera.aspect > 1.3 ? -4.2 : 0;
-      look = new THREE.Vector3(shift, 2.6, 0);
+      desired.set(Math.cos(sweep) * 17, 5.2, Math.sin(sweep) * 17);
+      look.set(this.camera.aspect > 1.3 ? -4.2 : 0, 2.6, 0);
       rate = 3;
     } else {
       // Frame the people who are still alive, and zoom in as they get fewer or closer together.
-      const alive = [...this.characters.values()].filter((c) => c.isAlive).map((c) => c.root.position);
-      const center = new THREE.Vector3();
+      center.set(0, 0, 0);
+      let alive = 0;
+      for (const character of this.characters.values()) {
+        if (!character.isAlive) continue;
+        center.add(character.root.position);
+        alive += 1;
+      }
       let spread = this.shownRadius * 0.9;
-      if (alive.length > 0) {
-        for (const position of alive) center.add(position);
-        center.divideScalar(alive.length);
-        spread = Math.max(...alive.map((position) => Math.hypot(position.x - center.x, position.z - center.z)), 4);
+      if (alive > 0) {
+        center.divideScalar(alive);
+        spread = 4;
+        for (const character of this.characters.values()) {
+          if (!character.isAlive) continue;
+          const p = character.root.position;
+          spread = Math.max(spread, Math.hypot(p.x - center.x, p.z - center.z));
+        }
       }
       const squeeze = this.camera.aspect < 1.4 ? 1.3 : 1;
       const distance = Math.min(44, Math.max(20, (spread * 1.75 + 10) * squeeze));
       // A lower angle than straight down, so people show as figures and not as small dots.
-      desired = new THREE.Vector3(center.x, distance * 0.66, center.z + distance * 0.75);
-      look = new THREE.Vector3(center.x, 1.5, center.z);
+      desired.set(center.x, distance * 0.66, center.z + distance * 0.75);
+      look.set(center.x, 1.5, center.z);
       rate = 4;
     }
 

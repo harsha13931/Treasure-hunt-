@@ -6,7 +6,9 @@ import { Audio } from "./audio.js";
 import { FloatingJoystick, HoldButton } from "./touch.js";
 import { World } from "./world.js";
 
-const SCREENS = ["home", "modes", "solo", "online", "lobby", "game", "results", "howto", "settings"] as const;
+const HUD_INTERVAL_MS = 100;
+const MINIMAP_INTERVAL_MS = 66;
+const SCREENS = ["title", "home", "modes", "solo", "online", "lobby", "game", "results", "howto", "settings"] as const;
 type ScreenName = (typeof SCREENS)[number];
 
 /** Simulation step in seconds. Matches the server exactly so the prediction lines up. */
@@ -78,6 +80,11 @@ let pointerLocked = false;
 let stepTimer = 0;
 let lastCountdown = 0;
 let lastFrame = performance.now();
+let lastHud = 0;
+const shownText = new WeakMap<HTMLElement, string>();
+let perfOverlay: HTMLElement | null = null;
+let lastPerf = 0;
+let lastMinimap = 0;
 let difficulty: BotDifficulty = "normal";
 
 const settings = loadSettings();
@@ -87,6 +94,7 @@ const ui = {
   stage: byId("stage"),
   screens: Object.fromEntries(SCREENS.map((name) => [name, byId(name)])) as Record<ScreenName, HTMLElement>,
   name: byId<HTMLInputElement>("name"),
+  startGame: byId<HTMLButtonElement>("start-game"),
   play: byId<HTMLButtonElement>("play"),
   modeSolo: byId<HTMLButtonElement>("mode-solo"),
   soloBots: byId<HTMLInputElement>("solo-bots"),
@@ -150,7 +158,8 @@ document.body.classList.toggle("touch", isTouchDevice);
 
 ui.name.value = readSavedName();
 applySettings();
-showScreen("home");
+showScreen("title");
+if (new URLSearchParams(location.search).has("perf")) startPerfOverlay();
 
 // The world asks for sounds, and the page plays them.
 world.onSound = (sound) => {
@@ -169,6 +178,12 @@ document.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
   if (target.closest("button") && !target.closest(".pad-btn")) audio.playClick();
   if (settings.music && !audio.isMusicOn) audio.setMusic(true);
+});
+
+// The first tap. It unlocks sound, and on a phone it goes fullscreen and landscape before the menu appears.
+ui.startGame.addEventListener("click", () => {
+  enterLandscape();
+  showScreen("home");
 });
 
 ui.play.addEventListener("click", () => {
@@ -620,7 +635,19 @@ function loop(now: number): void {
     world.setFacingMarker(null);
   }
 
-  renderHud();
+  // The text on screen only needs to change a few times a second. Writing it every frame costs real time.
+  if (now - lastHud >= HUD_INTERVAL_MS) {
+    lastHud = now;
+    renderHud();
+  }
+  if (state.screen === "game" && now - lastMinimap >= MINIMAP_INTERVAL_MS) {
+    lastMinimap = now;
+    drawMinimap();
+  }
+
+  // One loop does everything: input, then the camera, then the picture, so the picture is never a frame behind.
+  world.render();
+  if (perfOverlay) updatePerf(now);
   requestAnimationFrame(loop);
 }
 
@@ -744,18 +771,18 @@ function renderResults(): void {
 }
 
 function renderHud(): void {
-  ui.aliveCount.textContent = String(state.players.filter((p) => p.alive).length);
-  ui.ringRadius.textContent = state.radius.toFixed(1);
-  ui.phase.textContent = phaseText();
+  setText(ui.aliveCount, String(state.players.filter((p) => p.alive).length));
+  setText(ui.ringRadius, state.radius.toFixed(1));
+  setText(ui.phase, phaseText());
 
   const target = state.phase === "HIDE" ? state.endsAt : state.phase === "REVEAL" ? state.fireAt : 0;
-  ui.timer.textContent = target ? String(Math.max(0, Math.ceil((target - Date.now()) / 1000))) : "--";
+  setText(ui.timer, target ? String(Math.max(0, Math.ceil((target - Date.now()) / 1000))) : "--");
 
   // The lobby countdown for a public match.
   if (state.screen === "lobby") {
     const waiting = state.startsAt !== null ? Math.max(0, Math.ceil((state.startsAt - Date.now()) / 1000)) : null;
     ui.lobbyTimer.classList.toggle("hidden", waiting === null);
-    if (waiting !== null) ui.lobbyTimer.textContent = `Match starts in ${waiting}`;
+    if (waiting !== null) setText(ui.lobbyTimer, `Match starts in ${waiting}`);
   }
 
   // The big countdown before the lasers fire.
@@ -763,7 +790,7 @@ function renderHud(): void {
   const counting = state.phase === "REVEAL" && state.screen === "game" && secondsToFire > 0;
   ui.countdown.classList.toggle("hidden", !counting);
   if (counting) {
-    ui.countdown.textContent = String(secondsToFire);
+    setText(ui.countdown, String(secondsToFire));
     if (secondsToFire !== lastCountdown) {
       lastCountdown = secondsToFire;
       audio.playCountdown(secondsToFire === 1);
@@ -778,11 +805,11 @@ function renderHud(): void {
   const hiding = state.phase === "HIDE" && me?.alive === true;
   ui.controls.classList.toggle("hidden", !hiding);
   ui.lock.disabled = me?.locked === true;
-  ui.lock.textContent = me?.locked ? "Locked in" : "Lock in";
+  setText(ui.lock, me?.locked ? "Locked in" : "Lock in");
   const controlsHelp = isTouchDevice
     ? "Left side walks · right side turns"
     : "WASD to walk · mouse to look (click the screen) · Space to lock in";
-  ui.controlsHint.textContent = me?.locked ? "Locked in. Hold still until the reveal." : controlsHelp;
+  setText(ui.controlsHint, me?.locked ? "Locked in. Hold still until the reveal." : controlsHelp);
 
   // The phone controls only appear while the player can still move.
   const showTouch = isTouchDevice && hiding && me?.locked === false;
@@ -796,8 +823,30 @@ function renderHud(): void {
   const inMatch = state.screen === "game";
   const outOfGame = inMatch && state.phase !== "LOBBY" && state.phase !== "MATCH_OVER" && (!me || !me.alive);
   ui.spectating.classList.toggle("hidden", !outOfGame);
+}
 
-  if (inMatch) drawMinimap();
+/** Sets an element's text only when it changed, so an unchanged HUD costs nothing. */
+function setText(element: HTMLElement, value: string): void {
+  if (shownText.get(element) === value) return;
+  shownText.set(element, value);
+  element.textContent = value;
+}
+
+/** Optional readout, switched on with ?perf=1 in the address. */
+function startPerfOverlay(): void {
+  const element = document.createElement("pre");
+  element.className = "perf";
+  document.body.append(element);
+  perfOverlay = element;
+}
+function updatePerf(now: number): void {
+  if (!perfOverlay || now - lastPerf < 500) return;
+  lastPerf = now;
+  const s = world.stats();
+  perfOverlay.textContent =
+    `${s.fps.toFixed(0)} fps  ${s.frameMs.toFixed(1)} ms\n` +
+    `${s.drawCalls} draws  ${(s.triangles / 1000).toFixed(0)}k tris\n` +
+    `res ${s.pixelRatio.toFixed(2)}x${s.lowPower ? "  low power" : ""}`;
 }
 
 function phaseText(): string {
@@ -894,6 +943,7 @@ function resetToHome(): void {
   state.startsAt = null;
   world.setCharacters([]);
   showScreen("home");
+  setText(ui.timer, "--");
 }
 
 function playerName(): string {

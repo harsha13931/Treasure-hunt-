@@ -13,8 +13,15 @@
     <div id="stage"></div>
 
     <main id="app">
+      <!-- Start screen: the very first thing the player sees -->
+      <section id="title" class="screen title-screen">
+        <h1 class="logo">Laser Ring</h1>
+        <p class="tagline">Hide your spot. Aim in secret. Last one standing wins.</p>
+        <button id="start-game" class="btn primary big start-button">Start Game</button>
+      </section>
+
       <!-- Main menu -->
-      <section id="home" class="panel screen">
+      <section id="home" class="panel screen hidden">
         <h1 class="title">Laser Ring</h1>
         <p class="tagline">Hide your spot. Aim in secret. Last one standing wins.</p>
 
@@ -24,7 +31,7 @@
         </label>
 
         <div class="stack">
-          <button id="play" class="btn primary big">Play</button>
+          <button id="play" class="btn primary big">Play Game</button>
           <button class="btn" data-go="howto">How to play</button>
           <button class="btn" data-go="settings">Settings</button>
         </div>

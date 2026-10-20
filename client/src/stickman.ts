@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { MUZZLE_FORWARD, PLAYER_HEIGHT, BEAM_HEIGHT } from "../../shared/config.js";
 
 // The figure is modelled for a 1.8 m person and scaled up to the game's height.
@@ -65,8 +66,10 @@ export class Stickman {
     // Legs hang from hip and knee pivots, so they can swing when walking.
     for (const side of [-1, 1]) {
       const hip = new THREE.Group();
+      hip.userData.pivot = true;
       hip.position.set(side * 0.09, 0.92, 0);
       const knee = new THREE.Group();
+      knee.userData.pivot = true;
       knee.position.set(0, -0.44, 0);
       hip.add(capsule(LIMB * 1.1, new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, -0.44, 0), limb));
       knee.add(capsule(LIMB * 1.1, new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, -0.44, 0), limb));
@@ -92,6 +95,13 @@ export class Stickman {
     const gun = createLaserPistol(this.materials);
     gun.position.copy(rightHand);
     this.body.add(gun);
+
+    // Dozens of small meshes would each cost a draw call. Parts that move together become one mesh per material.
+    mergeStatic(this.body);
+    for (const leg of this.legs) {
+      mergeStatic(leg.hip, [leg.knee]);
+      mergeStatic(leg.knee);
+    }
 
     this.body.traverse((child) => {
       if (child instanceof THREE.Mesh) {
@@ -189,6 +199,49 @@ export class Stickman {
     this.body.add(joint(LIMB * 1.2, elbow, material));
     this.body.add(joint(LIMB * 1.25, hand, material));
   }
+}
+
+/**
+ * Replaces the meshes under `parent` with one mesh per material. Groups listed in `keep` (parts that move
+ * on their own, like a knee) are left alone, and so are their contents.
+ */
+function mergeStatic(parent: THREE.Group, keep: THREE.Object3D[] = []): void {
+  const moving = new Set<THREE.Object3D>([...keep, ...parent.children.filter((child) => child.userData.animated)]);
+  const inverse = new THREE.Matrix4();
+  parent.updateMatrixWorld(true);
+  inverse.copy(parent.matrixWorld).invert();
+
+  const byMaterial = new Map<THREE.Material, { meshes: THREE.Mesh[]; geometries: THREE.BufferGeometry[] }>();
+  const visit = (node: THREE.Object3D): void => {
+    for (const child of node.children) {
+      if (moving.has(child) || (child instanceof THREE.Group && child !== parent && isLimbPivot(child))) continue;
+      if (child instanceof THREE.Mesh) {
+        const entry = byMaterial.get(child.material as THREE.Material) ?? { meshes: [], geometries: [] };
+        const baked = child.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(inverse, child.matrixWorld));
+        entry.meshes.push(child);
+        entry.geometries.push(baked);
+        byMaterial.set(child.material as THREE.Material, entry);
+      } else {
+        visit(child);
+      }
+    }
+  };
+  visit(parent);
+
+  for (const [material, { meshes, geometries }] of byMaterial) {
+    for (const mesh of meshes) {
+      mesh.removeFromParent();
+      mesh.geometry.dispose();
+    }
+    const merged = mergeGeometries(geometries, false);
+    for (const geometry of geometries) geometry.dispose();
+    if (merged) parent.add(new THREE.Mesh(merged, material));
+  }
+}
+
+/** Hip and knee groups swing while walking, so their contents are merged separately. */
+function isLimbPivot(group: THREE.Group): boolean {
+  return group.userData.pivot === true;
 }
 
 /** A smooth rounded limb between two points. */

@@ -16,6 +16,7 @@ class ParticlePool {
   readonly mesh: THREE.InstancedMesh;
   private particles: Particle[];
   private next = 0;
+  private liveCount = 0;
   private dummy = new THREE.Object3D();
 
   constructor(
@@ -25,6 +26,7 @@ class ParticlePool {
   ) {
     this.mesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 8, 6), material, count);
     this.mesh.frustumCulled = false;
+    this.mesh.visible = false;
     this.particles = Array.from({ length: count }, () => ({
       alive: false,
       age: 0,
@@ -40,6 +42,8 @@ class ParticlePool {
   spawn(position: THREE.Vector3, velocity: THREE.Vector3, size: number, life: number, settles: boolean): void {
     const particle = this.particles[this.next];
     this.next = (this.next + 1) % this.particles.length;
+    if (!particle.alive) this.liveCount++;
+    this.mesh.visible = true;
     particle.alive = true;
     particle.age = 0;
     particle.life = life;
@@ -50,11 +54,14 @@ class ParticlePool {
   }
 
   update(dt: number): void {
+    // Nothing alive means nothing to move, upload, or draw.
+    if (this.liveCount === 0) return;
     this.particles.forEach((particle, index) => {
       if (!particle.alive) return;
       particle.age += dt;
       if (particle.age >= particle.life) {
         particle.alive = false;
+        this.liveCount--;
         this.hide(index);
         return;
       }
@@ -80,10 +87,13 @@ class ParticlePool {
       this.mesh.setMatrixAt(index, this.dummy.matrix);
     });
     this.mesh.instanceMatrix.needsUpdate = true;
+    if (this.liveCount === 0) this.mesh.visible = false;
   }
 
   clear(): void {
     for (const particle of this.particles) particle.alive = false;
+    this.liveCount = 0;
+    this.mesh.visible = false;
     this.hideAll();
   }
 
