@@ -255,13 +255,11 @@ describe("Room", () => {
     const volleyLength = REVEAL_MS + FIRE_MS + RESULT_MS;
     const lock = () => lockAll(room, [a, b, c], [FACE_NORTH, FACE_NORTH, FACE_EAST]);
 
-    // Nobody can fall until the ice actually breaks.
-    expect(lastOf(a, "hide")?.edge).toBe("none");
+    // Nobody can fall until the ice actually breaks, and nobody is warned ahead of time.
     lock();
     vi.advanceTimersByTime(volleyLength);
-    // One quiet volley is already on the books, so a second quiet one will break the edge. Players are told.
-    expect(lastOf(a, "hide")?.edge).toBe("possible");
-    expect(lastOf(a, "hide")?.nextRadius).toBeCloseTo(START_RING_RADIUS - RING_SHRINK_STEP, 6);
+    expect(countOf(a, "ring")).toBe(0);
+    expect(JSON.stringify(lastOf(a, "hide"))).not.toMatch(/edge|nextRadius/);
 
     lock();
     vi.advanceTimersByTime(REVEAL_MS + FIRE_MS + RESULT_MS);

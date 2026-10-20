@@ -133,7 +133,6 @@ export class World {
   private cameraYaw = 0;
   private followActive = false;
   private followPose = { x: 0, z: 0, yaw: 0 };
-  private danger: THREE.Group | null = null;
   /** Reused every frame, so the render loop creates no garbage. */
   private scratch = {
     desired: new THREE.Vector3(),
@@ -279,40 +278,6 @@ export class World {
       this.shake(0.9);
       this.onSound?.("collapse");
     }
-  }
-
-  /**
-   * Marks the outer band of ice that may break after this round, so nobody can say they were not warned.
-   * Pass null to clear it.
-   */
-  setDanger(zone: { inner: number; outer: number; level: "possible" | "certain" } | null): void {
-    if (this.danger) {
-      this.scene.remove(this.danger);
-      this.danger.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          child.geometry.dispose();
-          (child.material as THREE.Material).dispose();
-        }
-      });
-      this.danger = null;
-    }
-    if (!zone) return;
-
-    const color = zone.level === "certain" ? "#ff3b30" : "#ffb020";
-    const group = new THREE.Group();
-    const band = new THREE.Mesh(
-      new THREE.RingGeometry(zone.inner, zone.outer, 96, 1).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.2, depthWrite: false, side: THREE.DoubleSide }),
-    );
-    const edge = new THREE.Mesh(
-      new THREE.RingGeometry(zone.inner - 0.09, zone.inner + 0.09, 96, 1).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide }),
-    );
-    band.position.y = 0.04;
-    edge.position.y = 0.05;
-    group.add(band, edge);
-    this.scene.add(group);
-    this.danger = group;
   }
 
   /** These players were standing on ice that just broke. They fall with it, into the crevasse. */
@@ -850,13 +815,6 @@ export class World {
     for (const character of this.characters.values()) character.update(dt);
     for (const actor of this.titleActors.values()) actor.update(dt);
     this.effects.update(dt);
-
-    if (this.danger) {
-      const pulse = 0.6 + 0.4 * Math.sin(now * 0.006);
-      this.danger.children.forEach((child, index) => {
-        ((child as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = (index === 0 ? 0.22 : 0.9) * pulse;
-      });
-    }
 
     this.updateCamera(dt);
     // Shake is applied for this frame only, so it never builds up in the camera's real position.

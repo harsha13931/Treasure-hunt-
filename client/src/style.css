@@ -997,34 +997,6 @@ body.touch .leave-chip {
   }
 }
 
-.edge-warning {
-  position: absolute;
-  top: 104px;
-  left: 50%;
-  transform: translateX(-50%);
-  margin: 0;
-  padding: 6px 14px;
-  font-size: 0.85rem;
-  font-weight: 700;
-  color: #1a1203;
-  background: #ffb020;
-  border-radius: 999px;
-  text-align: center;
-  pointer-events: none;
-  animation: warn 1.4s ease-in-out infinite;
-}
-
-@keyframes warn {
-  50% {
-    opacity: 0.72;
-  }
-}
-
-.edge-warning.certain {
-  color: #fff;
-  background: #e0301f;
-}
-
 body.touch .killfeed {
   top: 104px;
   right: 12px;
@@ -1034,10 +1006,4 @@ body.touch .killfeed {
 body.touch .killfeed li {
   padding: 4px 9px;
   font-size: 0.75rem;
-}
-
-body.touch .edge-warning {
-  top: 56px;
-  font-size: 0.72rem;
-  padding: 4px 10px;
 }

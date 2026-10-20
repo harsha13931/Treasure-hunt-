@@ -18,9 +18,6 @@ export type ClientMessage =
     }
   | { type: "leave" };
 
-/** Whether the outer ice may break after the coming volley. */
-export type EdgeWarning = "none" | "possible" | "certain";
-
 export type Phase = "LOBBY" | "HIDE" | "REVEAL" | "FIRE" | "RESULT" | "MATCH_OVER";
 
 export interface PublicPlayer {
@@ -58,9 +55,6 @@ export type ServerMessage =
       volley: number;
       endsAt: number;
       radius: number;
-      /** Radius the floor would shrink to. Anyone standing outside it when it breaks falls. */
-      nextRadius: number;
-      edge: EdgeWarning;
       you: { alive: boolean; x: number; z: number; yaw: number; vx: number; vz: number; locked: boolean };
       players: PublicPlayer[];
     }

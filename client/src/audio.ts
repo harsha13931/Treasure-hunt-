@@ -27,6 +27,8 @@ export class Audio {
   private drumBus: GainNode | null = null;
   private leadBus: GainNode | null = null;
   private intensity = 0.4;
+  private voiceOn = true;
+  private voice: SpeechSynthesisVoice | null = null;
   private nextStepTime = 0;
   private step = 0;
 
@@ -39,6 +41,38 @@ export class Audio {
     this.volume = Math.min(1, Math.max(0, volume));
     if (this.master && this.context) {
       this.master.gain.setTargetAtTime(this.volume, this.context.currentTime, 0.05);
+    }
+  }
+
+  /** Turns the spoken announcements on or off. */
+  setVoice(on: boolean): void {
+    this.voiceOn = on;
+    if (!on) window.speechSynthesis?.cancel();
+  }
+
+  /**
+   * Says a line out loud with the browser's built-in voice, so nothing is downloaded and nothing is licensed.
+   * Lines never pile up: if several are waiting, the oldest are dropped so the call-out stays close to the action.
+   */
+  speak(text: string): void {
+    const synth = window.speechSynthesis;
+    if (!this.voiceOn || !synth || this.volume === 0) return;
+    try {
+      if (synth.pending) synth.cancel();
+      const line = new SpeechSynthesisUtterance(text);
+      this.voice ??= pickVoice(synth);
+      if (this.voice) {
+        line.voice = this.voice;
+        line.lang = this.voice.lang;
+      } else {
+        line.lang = "en-US";
+      }
+      line.rate = 1.02;
+      line.pitch = 0.85;
+      line.volume = Math.min(1, this.volume);
+      synth.speak(line);
+    } catch {
+      // Speech is optional. The banner and the feed still show the same words.
     }
   }
 
@@ -542,4 +576,15 @@ export class Audio {
       bus.disconnect();
     }, 1200);
   }
+}
+
+/** Prefers a clear English voice. Falls back to whatever the browser offers. */
+function pickVoice(synth: SpeechSynthesis): SpeechSynthesisVoice | null {
+  const voices = synth.getVoices();
+  const english = voices.filter((voice) => voice.lang.toLowerCase().startsWith("en"));
+  return (
+    english.find((voice) => /natural|google|premium|enhanced|daniel|alex|samantha/i.test(voice.name)) ??
+    english[0] ??
+    null
+  );
 }

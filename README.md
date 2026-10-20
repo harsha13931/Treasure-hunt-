@@ -23,9 +23,9 @@ A match needs **at least 2 players in total**, bots included, and holds up to 8.
 ## Features
 
 - **Snow world:** an open snowfield with mountains and pine trees, snow falling from above, and the arena as a circle of ice over a deep crevasse.
-- **The floor is deadly:** when the outer ice breaks, anyone standing on it falls into the crevasse and is out. Before every round the game warns you (orange: it breaks if nobody is hit; red: it will break), and shades the doomed band on the floor and the minimap.
+- **The floor is deadly:** when the outer ice breaks, anyone standing on it falls into the crevasse and is out. There is no warning, so players have to judge for themselves when to stay toward the middle.
 - **Spectating:** once you are out, follow any player still alive from behind, and switch with the ◀ ▶ buttons or Q and E. Positions stay secret during the hide phase, so you can follow a player once they are revealed.
-- **Announcements:** every knock-out is called out by name, as a banner and in a feed ("Ben was eliminated by Ann", "Cy fell into the crevasse").
+- **Announcements:** every knock-out is called out by name, as a banner, in a feed, and out loud with the browser's built-in voice ("Ben was eliminated by Ann", "Cy fell into the crevasse"). Voice can be turned off in Settings.
 - **Score:** a generated soundtrack (bass, drums, pads, arpeggio) that builds when the lasers are about to fire.
 - **Steady frame rate:** one animation loop updates and draws; resolution adapts to the device if frames run long; bloom only runs while lasers are on screen; stick men are merged into a handful of meshes. Add `?perf=1` to the address to see fps, draw calls and resolution.
 - **Smooth movement:** you speed up and slow down like a person, and your own movement is predicted in the browser so it never waits on the network.

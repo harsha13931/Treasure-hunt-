@@ -19,7 +19,7 @@ import {
 } from "../shared/config.js";
 import { resolveVolley, Shooter, Target, Vec2 } from "../shared/geometry.js";
 import { clampToRing, MoveInput, Pose, startPoseFor, stepPose } from "../shared/movement.js";
-import type { ClientMessage, EdgeWarning, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../shared/protocol.js";
+import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../shared/protocol.js";
 import { BotPlan, planBot, stepBot } from "./bot.js";
 
 export type Send = (message: ServerMessage) => void;
@@ -387,8 +387,11 @@ export class Room {
     return Math.max(MIN_RING_RADIUS, this.radius - RING_SHRINK_STEP);
   }
 
-  /** Tells players, before they move, whether the outer ice might break after this volley. */
-  private edgeWarning(): EdgeWarning {
+  /**
+   * Whether the outer ice might break after this volley. Players are never told this, so it stays a surprise.
+   * Only the bots use it, and not perfectly.
+   */
+  private edgeWarning(): "none" | "possible" | "certain" {
     if (this.radius - MIN_RING_RADIUS < 1e-6) return "none";
     if (this.volleysSinceShrink + 1 >= FORCED_SHRINK_EVERY_VOLLEYS) return "certain";
     // A round with no kill adds to the streak, so a streak one short of the limit means a quiet round breaks the edge.
@@ -396,11 +399,11 @@ export class Room {
     return "none";
   }
 
-  /** Bots read the same warning a person sees, and the better ones keep clear of an edge that may break. */
+  /** Better bots sometimes keep clear of an edge that may break. Easy bots often get caught. */
   private botPlanRadius(): number {
     const edge = this.edgeWarning();
-    if (edge === "certain") return this.nextRadius();
-    if (edge === "possible" && Math.random() < 0.3 + 0.7 * this.botSkill) return this.nextRadius();
+    if (edge === "certain" && Math.random() < 0.2 + 0.8 * this.botSkill) return this.nextRadius();
+    if (edge === "possible" && Math.random() < 0.5 * this.botSkill) return this.nextRadius();
     return this.radius;
   }
 
@@ -538,8 +541,6 @@ export class Room {
         volley: this.volley,
         endsAt: this.endsAt,
         radius: this.radius,
-        nextRadius: this.nextRadius(),
-        edge: this.edgeWarning(),
         you: {
           alive: player.alive,
           x: player.pose.x,

@@ -1,7 +1,7 @@
 import { ROOM_CODE_LENGTH, ROOM_SIZE, START_RING_RADIUS, TICK_MS, type BotDifficulty } from "../../shared/config.js";
 import type { Beam, Kill } from "../../shared/geometry.js";
 import { facing, stepPose, type MoveInput, type Pose } from "../../shared/movement.js";
-import type { ClientMessage, EdgeWarning, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../../shared/protocol.js";
+import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../../shared/protocol.js";
 import { Audio } from "./audio.js";
 import { colorFor } from "./stickman.js";
 import { FloatingJoystick, HoldButton } from "./touch.js";
@@ -40,6 +40,7 @@ interface Settings {
   music: boolean;
   volume: number;
   shake: boolean;
+  voice: boolean;
 }
 
 const state = {
@@ -57,8 +58,6 @@ const state = {
   endsAt: 0,
   fireAt: 0,
   radius: START_RING_RADIUS,
-  nextRadius: START_RING_RADIUS,
-  edge: "none" as EdgeWarning,
   me: null as Me | null,
   /** Our position predicted by stepping our own inputs, and the step before it (for smoothing). */
   current: { x: 0, z: 0, yaw: 0, vx: 0, vz: 0 } as Pose,
@@ -135,6 +134,7 @@ const ui = {
   setVolume: byId<HTMLInputElement>("set-volume"),
   volumeLabel: byId("volume-label"),
   setShake: byId<HTMLInputElement>("set-shake"),
+  setVoice: byId<HTMLInputElement>("set-voice"),
   minimap: byId<HTMLCanvasElement>("minimap"),
   aliveCount: byId("alive-count"),
   ringRadius: byId("ring-radius"),
@@ -154,7 +154,6 @@ const ui = {
   countdown: byId("countdown"),
   banner: byId("banner"),
   feed: byId("killfeed"),
-  edgeWarning: byId("edge-warning"),
   toast: byId("toast"),
 };
 
@@ -314,6 +313,12 @@ ui.setVolume.addEventListener("input", () => {
   applySettings();
   saveSettings();
 });
+ui.setVoice.addEventListener("change", () => {
+  settings.voice = ui.setVoice.checked;
+  applySettings();
+  saveSettings();
+  if (settings.voice) audio.speak("Voice announcements on");
+});
 ui.setShake.addEventListener("change", () => {
   settings.shake = ui.setShake.checked;
   applySettings();
@@ -438,8 +443,6 @@ function handle(message: ServerMessage): void {
 
     case "ring":
       state.radius = message.radius;
-      state.edge = "none";
-      world.setDanger(null);
       world.setRing(message.radius);
       onFallen(message.fallen ?? []);
       break;
@@ -485,14 +488,9 @@ function onHide(message: Extract<ServerMessage, { type: "hide" }>): void {
   state.volley = message.volley;
   state.endsAt = message.endsAt;
   state.radius = message.radius;
-  state.nextRadius = message.nextRadius;
-  state.edge = message.edge;
   state.players = message.players;
   state.revealed = [];
   world.setRing(message.radius, false);
-  world.setDanger(
-    message.edge === "none" ? null : { inner: message.nextRadius, outer: message.radius, level: message.edge === "certain" ? "certain" : "possible" },
-  );
   world.clearBeams();
 
   const you = message.you;
@@ -585,9 +583,12 @@ function onFire(beams: Beam[], eliminated: string[], kills: Kill[]): void {
   for (const kill of kills) {
     addFeed(kill.victim, `was eliminated by`, kill.killers);
   }
+  if (kills.length > 0) {
+    // The same words are spoken, so players who are busy watching the fight still hear who went down.
+    audio.speak(kills.map(killText).join(". "));
+  }
   if (kills.length === 1) {
-    const kill = kills[0];
-    showBanner(`${displayName(kill.victim)} ${kill.victim === state.playerId ? "were" : "was"} eliminated by ${joinNames(kill.killers)}`, 2600);
+    showBanner(killText(kills[0]), 2600);
   } else if (kills.length > 1) {
     showBanner(`${kills.length} players eliminated`, 2200);
   } else {
@@ -599,6 +600,11 @@ function onFire(beams: Beam[], eliminated: string[], kills: Kill[]): void {
     const by = kills.find((k) => k.victim === state.me?.id)?.killers ?? [];
     showToast(by.length ? `${joinNames(by)} eliminated you. You are out of the match.` : "You were hit. You are out of the match.");
   }
+}
+
+/** "Ben was eliminated by Ann". Written for "You" too: "You were eliminated by Ann". */
+function killText(kill: Kill): string {
+  return `${displayName(kill.victim)} ${kill.victim === state.playerId ? "were" : "was"} eliminated by ${joinNames(kill.killers)}`;
 }
 
 /** The outer ice broke. Anyone standing on it falls with it. */
@@ -613,6 +619,11 @@ function onFallen(fallen: string[]): void {
     addFeed(id, "fell into the crevasse", []);
   }
   world.plunge(fallen);
+  audio.speak(
+    fallen.length <= 3
+      ? fallen.map((id) => `${displayName(id)} fell into the crevasse`).join(". ")
+      : `${fallen.length} players fell into the crevasse`,
+  );
   const first = fallen[0];
   showBanner(
     fallen.length === 1
@@ -663,11 +674,15 @@ function onMatchOver(message: Extract<ServerMessage, { type: "match_over" }>): v
   state.ranking = message.ranking;
   state.winnerId = message.winnerId;
   const wasPlaying = state.me !== null;
-  if (wasPlaying) audio.playResult(message.winnerId === state.playerId);
+  if (wasPlaying) {
+    audio.playResult(message.winnerId === state.playerId);
+    if (message.winnerId) {
+      audio.speak(message.winnerId === state.playerId ? "You win the match" : `${nameOf(message.winnerId)} wins the match`);
+    }
+  }
 
   state.me = null;
   world.setCharacters([]);
-  world.setDanger(null);
   state.showResults = wasPlaying;
   renderResults();
   if (wasPlaying) showScreen("results");
@@ -921,18 +936,6 @@ function renderHud(): void {
     }
   }
 
-  const warn = hiding && state.edge !== "none";
-  ui.edgeWarning.classList.toggle("hidden", !warn);
-  ui.edgeWarning.classList.toggle("certain", state.edge === "certain");
-  if (warn) {
-    setText(
-      ui.edgeWarning,
-      state.edge === "certain"
-        ? "The outer ice WILL break after this round. Stay inside the line."
-        : "The outer ice breaks if nobody gets hit this round. Stay inside the line.",
-    );
-  }
-
   const inMatch = state.screen === "game";
   const outOfGame = inMatch && state.phase !== "LOBBY" && state.phase !== "MATCH_OVER" && (!me || !me.alive);
   ui.spectating.classList.toggle("hidden", !outOfGame);
@@ -1046,15 +1049,6 @@ function drawMinimap(): void {
   ctx.stroke();
   ctx.restore();
 
-  if (state.edge !== "none" && state.phase !== "LOBBY") {
-    // The band that falls away if the ice breaks.
-    ctx.beginPath();
-    ctx.arc(half, half, state.radius * scale - 1, 0, Math.PI * 2);
-    ctx.arc(half, half, state.nextRadius * scale, 0, Math.PI * 2, true);
-    ctx.fillStyle = state.edge === "certain" ? "rgba(255, 59, 48, 0.4)" : "rgba(255, 176, 32, 0.35)";
-    ctx.fill("evenodd");
-  }
-
   const dot = (x: number, z: number, color: string, radius: number) => {
     const p = toPx(x, z);
     ctx.beginPath();
@@ -1107,7 +1101,6 @@ function resetToHome(): void {
   state.lastSolo = null;
   state.startsAt = null;
   world.setCharacters([]);
-  world.setDanger(null);
   ui.feed.replaceChildren();
   showScreen("home");
   setText(ui.timer, "--");
@@ -1137,12 +1130,14 @@ function applySettings(): void {
   ui.setVolume.value = String(Math.round(settings.volume * 100));
   ui.volumeLabel.textContent = `${Math.round(settings.volume * 100)}%`;
   ui.setShake.checked = settings.shake;
+  ui.setVoice.checked = settings.voice;
+  audio.setVoice(settings.voice);
   ui.musicToggle.textContent = settings.music ? "Music on" : "Music off";
   ui.musicToggle.setAttribute("aria-pressed", String(settings.music));
 }
 
 function loadSettings(): Settings {
-  const fallback: Settings = { music: false, volume: 0.8, shake: true };
+  const fallback: Settings = { music: false, volume: 0.8, shake: true, voice: true };
   try {
     const raw = localStorage.getItem("laser-ring:settings");
     if (!raw) return fallback;
@@ -1151,6 +1146,7 @@ function loadSettings(): Settings {
       music: parsed.music === true,
       volume: typeof parsed.volume === "number" ? Math.min(1, Math.max(0, parsed.volume)) : fallback.volume,
       shake: parsed.shake !== false,
+      voice: parsed.voice !== false,
     };
   } catch {
     return fallback;
