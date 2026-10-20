@@ -7,7 +7,7 @@ export type ClientMessage =
   | { type: "join"; code: string; name: string }
   | ({ type: "input" } & MoveInput)
   | { type: "lock"; yaw: number }
-  | { type: "start" }
+  | { type: "start"; /** Fill empty spots with bots, up to a full room. */ bots?: boolean }
   | { type: "leave" };
 
 export type Phase = "LOBBY" | "HIDE" | "REVEAL" | "FIRE" | "RESULT" | "MATCH_OVER";
@@ -16,6 +16,7 @@ export interface PublicPlayer {
   id: string;
   name: string;
   alive: boolean;
+  bot: boolean;
 }
 
 export interface RevealPlayer {

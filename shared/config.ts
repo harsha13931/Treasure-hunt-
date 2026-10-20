@@ -2,27 +2,29 @@
 // Units are meters.
 
 export const MIN_PLAYERS = 2;
-export const MAX_PLAYERS = 12;
+/** A full room. Empty spots can be filled with bots up to this number. */
+export const ROOM_SIZE = 8;
+export const MAX_PLAYERS = ROOM_SIZE;
 export const ROOM_CODE_LENGTH = 5;
 /** Server simulation step. The browser predicts with the same step. */
 export const TICK_MS = 50;
 
 // The circle the players must stay inside. It shrinks in steps.
-export const START_RING_RADIUS = 16;
+export const START_RING_RADIUS = 18;
 export const RING_SHRINK_STEP = 2.5;
-export const MIN_RING_RADIUS = 4.5;
+export const MIN_RING_RADIUS = 5.5;
 /** After this many volleys in a row with no kill, the ring shrinks one step. */
 export const NO_KILL_VOLLEYS_BEFORE_SHRINK = 2;
 
 // Players and the laser pistol.
-export const PLAYER_RADIUS = 0.75;
-export const PLAYER_HEIGHT = 3.3;
-export const WALK_SPEED = 3.6;
+export const PLAYER_RADIUS = 1;
+export const PLAYER_HEIGHT = 4.8;
+export const WALK_SPEED = 4.6;
 /** Height of the laser beam. Also the height the gun is held at. */
-export const BEAM_HEIGHT = 2.55;
+export const BEAM_HEIGHT = 3.72;
 /** Distance from the body center to the muzzle, along the aim direction. */
-export const MUZZLE_FORWARD = 1.3;
-export const BEAM_HALF_WIDTH = 0.06;
+export const MUZZLE_FORWARD = 1.92;
+export const BEAM_HALF_WIDTH = 0.09;
 export const BEAM_RANGE = 80;
 
 // Phase timings.
@@ -32,5 +34,20 @@ export const FIRE_MS = 1_200;
 export const RESULT_MS = 2_500;
 
 // The pit the match is played in. The cage (the ring) shrinks inside it.
-export const PIT_RADIUS = 36;
-export const PIT_WALL_HEIGHT = 24;
+export const PIT_RADIUS = 44;
+export const PIT_WALL_HEIGHT = 32;
+/** How far down the bottom of the pit is. Floor levels that break away fall this far. */
+export const PIT_DEPTH = 50;
+
+/**
+ * The edge of each floor level, from the outside in. The cage stands on the outer edge of the
+ * current level. When the ring shrinks, the level outside the cage breaks away and falls.
+ */
+export function ringLevels(): number[] {
+  const levels: number[] = [];
+  for (let radius = START_RING_RADIUS; radius > MIN_RING_RADIUS + 1e-6; radius -= RING_SHRINK_STEP) {
+    levels.push(radius);
+  }
+  levels.push(MIN_RING_RADIUS);
+  return levels;
+}

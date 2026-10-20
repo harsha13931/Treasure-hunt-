@@ -13,6 +13,7 @@ ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
+# Render sets PORT itself, so the check follows whatever port the server is actually on.
+HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- "http://127.0.0.1:${PORT}/healthz" || exit 1
 
 CMD ["npm", "start"]

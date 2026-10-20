@@ -570,6 +570,115 @@ body.touch .btn {
   padding: 12px 18px;
 }
 
+/* ---- Title scene layout, countdown, and bots option ---- */
+
+.panel {
+  max-height: calc(100% - 8px);
+  overflow-y: auto;
+  animation: rise 0.45s ease both;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* On wide screens the menu sits on the left, so the two duelists on the title screen stay in view. */
+@media (min-width: 700px) {
+  #app {
+    place-items: center start;
+    padding-left: 7vw;
+  }
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+  color: var(--ink);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.check input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+  flex: none;
+  padding: 0;
+}
+
+.countdown {
+  position: fixed;
+  left: 50%;
+  top: 42%;
+  z-index: 3;
+  pointer-events: none;
+  font-size: clamp(5rem, 18vw, 11rem);
+  font-weight: 800;
+  line-height: 1;
+  color: #fff4ef;
+  text-shadow:
+    0 0 40px rgba(255, 70, 40, 0.65),
+    0 6px 30px rgba(0, 0, 0, 0.8);
+  transform: translate(-50%, -50%);
+  animation: tick 1s ease-out both;
+}
+
+@keyframes tick {
+  0% {
+    transform: translate(-50%, -50%) scale(1.7);
+    opacity: 0;
+  }
+  22% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0.85;
+  }
+}
+
+/* Short screens, such as a phone held sideways: tighten everything so the menu fits. */
+@media (max-height: 520px) {
+  .panel {
+    padding: 14px 16px;
+  }
+
+  .tagline {
+    display: none;
+  }
+
+  .title {
+    font-size: 1.7rem;
+    margin-bottom: 8px;
+  }
+
+  .field {
+    margin-bottom: 10px;
+  }
+
+  .divider {
+    margin: 12px 0;
+  }
+
+  .player-list li {
+    padding: 5px 10px;
+  }
+
+  .room-code {
+    font-size: 1.6rem;
+    padding: 6px 12px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

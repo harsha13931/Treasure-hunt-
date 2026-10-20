@@ -48,6 +48,11 @@
         <h2 class="section-title">Players <span id="player-count"></span></h2>
         <ul id="player-list" class="player-list"></ul>
 
+        <label id="bots-row" class="check hidden">
+          <input id="bots" type="checkbox" checked />
+          <span>Fill empty spots with bots (up to 8 players)</span>
+        </label>
+
         <div class="row">
           <button id="start" class="btn primary">Start match</button>
           <button id="leave" class="btn ghost">Leave</button>
@@ -94,6 +99,7 @@
 
       <div id="rotate" class="rotate"><p>Turn your phone sideways to play</p></div>
       <button id="music-toggle" class="chip-button" aria-pressed="false">Music off</button>
+      <div id="countdown" class="countdown hidden" aria-live="assertive"></div>
       <div id="banner" class="banner" role="status" aria-live="polite"></div>
       <div id="toast" class="toast hidden" role="alert"></div>
     </main>

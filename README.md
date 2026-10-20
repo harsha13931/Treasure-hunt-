@@ -5,19 +5,21 @@ A multiplayer last-one-standing game. You are a stick man in a deep pit, inside 
 - **Hidden positions:** during the hide phase the server sends each player only their own position. Nobody else is drawn on your screen, and their positions are never sent to your browser until the reveal.
 - **The server decides:** the server runs the timers, the movement, every hit, and the cage. The browser only draws what it is told.
 - **One gun:** a laser pistol. The beam is a straight line that stops at the first player it touches.
-- **The cage shrinks:** if two volleys in a row end with nobody hit, the cage closes in one step and stays there. Anyone standing outside the new edge is pushed back inside.
+- **The floor breaks away:** the arena floor is built as concentric levels. If two volleys in a row end with nobody hit, the outermost level cracks apart and falls into the pit, and the cage closes in to the next level. Anyone left outside the new edge is pushed back in.
+- **Eight players, with bots:** a full room is eight. The host can fill empty spots with bots, so one person can play alone, or two or more can play together. Bots only use positions that were made public at a reveal, and they are removed when the match ends.
 - **Out means out:** there are no points. A player who is hit watches the rest of the match.
 - **Works on phones (landscape only):** floating joysticks that appear under your thumb, plus buttons for walking forward and back (left side) and turning left and right (right side).
-- **Everything is free:** the stick men, the pistol, the pit, the textures, and the sounds are all drawn or generated in code. There are no model, image, or audio files to license.
+- **Everything is free:** the stick men, the pistol, the pit, the textures, and every sound are drawn or generated in code. There are no model, image, or audio files to license.
+- **A real game feel:** a title screen where two stick men face off and one shoots the other, muzzle flashes, soft glowing lasers, a red burst when someone is hit, falling and recoil animations, camera shake, a 3-2-1 countdown, footsteps, and sound effects for shots, hits, and the floor breaking away.
 - **No laser until it fires:** there is no crosshair and no aiming line. A faint arrow on the floor in front of you shows which way you face. Beams appear only when the lasers fire.
 
 ## How a match plays
 
-1. The host starts the match once at least two players are in the room.
+1. The host starts the match. With bots on (the default), the room is filled to eight. With bots off, at least two people are needed.
 2. **Hide phase (30 seconds):** walk anywhere inside the cage and turn to aim. Press Lock in (or Space) to stand still. When everyone has locked in, or the timer ends, the reveal starts.
 3. **Reveal (3 seconds):** every player's position and aim become visible.
 4. **Fire:** every laser fires at the same moment. Anyone a beam touches is out.
-5. If nobody was hit twice in a row, the cage shrinks. Then the next hide phase begins with the survivors.
+5. If nobody was hit twice in a row, the outer floor level breaks away and the cage closes in. Then the next hide phase begins with the survivors.
 6. The last player alive wins.
 
 ## Controls
@@ -58,28 +60,34 @@ npm start       # serves the client and the WebSocket server on $PORT (default 8
 
 Then open `http://localhost:8080`.
 
-## Deploy
+## Host it on Render
 
-The included `Dockerfile` builds one container that serves both the game and its WebSocket server. Any host that runs Docker will work:
+Render runs this game as a single web service. The WebSocket connection works on Render, and Render provides the HTTPS address for you.
 
-- **Render:** create a Web Service from this repo, choose Docker, and it will use `PORT` automatically. HTTPS and `wss://` are handled for you.
-- **Fly.io:** run `fly launch`, then set `internal_port = 8080` in `fly.toml`.
-- **Railway:** deploy from the repo. It detects the Dockerfile.
+1. Push this repository to GitHub.
+2. In the Render dashboard choose **New > Blueprint** and pick the repository. Render reads `render.yaml` and builds the `Dockerfile`. (Or choose **New > Web Service**, pick the repository, and set the runtime to **Docker**. The health check path is `/healthz`.)
+3. Wait for the build. Render gives you an address like `https://laser-ring.onrender.com`. Open it and play.
 
-Set a custom domain in your host's dashboard. The browser connects to `/ws` on the same domain, so no extra configuration is needed.
+Things to know:
+
+- **The free plan sleeps.** After a while with no visitors, the service stops, and the first visit afterwards takes about a minute to wake it up. A match in progress is lost if the service restarts. A paid plan keeps it awake.
+- **Run exactly one instance.** Rooms live in the server's memory, so every player in a room must reach the same instance. Do not scale the service to more than one.
+- **The port is automatic.** Render sets `PORT`, and the server uses it. You do not need to set anything.
+- Any host that runs Docker works the same way, such as Fly.io (set `internal_port = 8080`) or Railway.
 
 ## Project layout
 
 ```
 client/        Browser app: Three.js pit and cage, stick men, touch controls, audio, menus (Vite + TypeScript)
 server/        Node server: static files, WebSocket rooms, round state machine
-shared/        Rules, movement, beam geometry, and message types used by both sides
+shared/        Rules, movement, beam geometry, floor levels, and message types used by both sides
 Dockerfile     Production container
+render.yaml    Render Blueprint (one-click setup)
 ```
 
 ## Tuning
 
-Everything about the rules lives in `shared/config.ts`: the cage size and shrink step, how many quiet volleys trigger a shrink, walking speed, player size, and all the phase timings.
+Everything about the rules lives in `shared/config.ts`: the cage size and the number of floor levels, how many quiet volleys make a level fall, walking speed, player size, room size, and all the phase timings. Bot behavior is in `server/bot.ts`.
 
 ## Not yet built
 

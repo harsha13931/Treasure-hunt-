@@ -1,4 +1,4 @@
-import { ROOM_CODE_LENGTH, START_RING_RADIUS, TICK_MS } from "../../shared/config.js";
+import { ROOM_CODE_LENGTH, ROOM_SIZE, START_RING_RADIUS, TICK_MS } from "../../shared/config.js";
 import type { Beam } from "../../shared/geometry.js";
 import { facing, stepPose, type MoveInput, type Pose } from "../../shared/movement.js";
 import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../../shared/protocol.js";
@@ -52,6 +52,8 @@ const state = {
 
 const keys = new Set<string>();
 let pointerLocked = false;
+let stepTimer = 0;
+let lastCountdown = 0;
 let lastFrame = performance.now();
 
 const audio = new Audio();
@@ -73,6 +75,9 @@ const ui = {
   playerCount: byId("player-count"),
   playerList: byId<HTMLUListElement>("player-list"),
   start: byId<HTMLButtonElement>("start"),
+  bots: byId<HTMLInputElement>("bots"),
+  botsRow: byId("bots-row"),
+  countdown: byId("countdown"),
   leave: byId<HTMLButtonElement>("leave"),
   lobbyNote: byId("lobby-note"),
   minimap: byId<HTMLCanvasElement>("minimap"),
@@ -105,6 +110,16 @@ document.body.classList.toggle("touch", isTouchDevice);
 ui.name.value = readSavedName();
 showScreen("menu");
 
+// The title scene plays behind the menu and the lobby: two stick men face off, one fires, one falls.
+world.setTitleScene(true);
+
+// The world asks for sounds, and the page plays them.
+world.onSound = (sound) => {
+  if (sound === "shot") audio.playShot();
+  else if (sound === "hit") audio.playHit();
+  else audio.playCollapse();
+};
+
 ui.create.addEventListener("click", () => {
   const name = ui.name.value;
   saveName(name);
@@ -135,7 +150,8 @@ ui.roomCode.addEventListener("click", () => {
   void navigator.clipboard?.writeText(state.code).then(() => showToast("Room code copied.", true), () => {});
 });
 
-ui.start.addEventListener("click", () => send({ type: "start" }));
+ui.start.addEventListener("click", () => send({ type: "start", bots: ui.bots.checked }));
+ui.bots.addEventListener("change", () => renderLobby());
 
 ui.leave.addEventListener("click", () => {
   state.leaving = true;
@@ -257,15 +273,17 @@ function handle(message: ServerMessage): void {
     case "ring":
       state.radius = message.radius;
       world.setRing(message.radius);
-      showBanner("The ring shrinks");
+      showBanner("The floor breaks away");
       break;
 
     case "match_over":
       state.phase = "MATCH_OVER";
       state.players = message.players;
       state.matchResult = describeWinner(message.winnerId);
+      if (state.me) audio.playResult(message.winnerId === state.me.id);
       state.me = null;
       world.setCharacters([]);
+      world.setTitleScene(true);
       break;
   }
   renderHud();
@@ -277,12 +295,14 @@ function onLobby(): void {
   const inLobby = state.phase === "LOBBY" || state.phase === "MATCH_OVER";
   if (inLobby) {
     showScreen("lobby");
+    world.setTitleScene(true);
     ui.lobbyResult.textContent = state.matchResult;
     ui.lobbyResult.classList.toggle("hidden", !state.matchResult);
     renderLobby();
   } else if (ui.screens.game.classList.contains("hidden")) {
     // Joined while a match is running. Watch until the next match starts.
     showScreen("game");
+    world.setTitleScene(false);
     world.setCharacters([]);
   }
 }
@@ -295,7 +315,8 @@ function onHide(message: Extract<ServerMessage, { type: "hide" }>): void {
   state.radius = message.radius;
   state.players = message.players;
   state.revealed = [];
-  world.setRing(message.radius);
+  world.setTitleScene(false);
+  world.setRing(message.radius, false);
   world.clearBeams();
 
   const you = message.you;
@@ -331,7 +352,8 @@ function onReveal(message: Extract<ServerMessage, { type: "reveal" }>): void {
   state.fireAt = message.fireAt;
   state.radius = message.radius;
   state.revealed = message.players;
-  world.setRing(message.radius);
+  lastCountdown = 0;
+  world.setRing(message.radius, false);
   if (state.me) {
     state.me.locked = true;
     const own = message.players.find((p) => p.id === state.me?.id);
@@ -358,22 +380,20 @@ function onFire(beams: Beam[], eliminated: string[]): void {
   state.phase = "FIRE";
   world.fire(beams);
 
-  // One shot sound per shooter, capped so a crowded volley does not stack too many sounds.
-  const shooters = [...new Set(beams.map((beam) => beam.shooter))];
-  shooters.slice(0, 8).forEach(() => audio.playShot());
-
   for (const id of eliminated) {
     world.setAlive(id, false);
     const player = state.players.find((p) => p.id === id);
     if (player) player.alive = false;
   }
   if (eliminated.length > 0) {
-    audio.playEliminated();
     const names = eliminated.map((id) => nameOf(id));
     showBanner(names.length === 1 ? `${names[0]} is out` : `${names.join(" and ")} are out`);
+  } else {
+    showBanner("Fire!", 900);
   }
   if (state.me && eliminated.includes(state.me.id)) {
     state.me.alive = false;
+    audio.playEliminated();
     showToast("You were hit. You are out of the game.");
   }
 }
@@ -395,6 +415,17 @@ function loop(now: number): void {
     me.yaw = wrapAngle(me.yaw - turn * STICK_TURN_SPEED * dt);
   }
 
+  // Footsteps while the local player walks.
+  if (state.moving && canTurn()) {
+    stepTimer += dt;
+    if (stepTimer >= 0.4) {
+      stepTimer = 0;
+      audio.playFootstep();
+    }
+  } else {
+    stepTimer = 0.25;
+  }
+
   state.accumulator += dt;
   while (state.accumulator >= DT) {
     state.accumulator -= DT;
@@ -410,8 +441,12 @@ function loop(now: number): void {
     world.setMoving(me.id, state.moving);
     world.setView({ kind: "follow", x, z, yaw: me.yaw });
     world.setFacingMarker({ x, z, yaw: me.yaw });
+  } else if (state.phase === "LOBBY" || state.phase === "MATCH_OVER") {
+    // Menu and lobby: the camera sweeps around the title duel.
+    world.setView({ kind: "title" });
+    world.setFacingMarker(null);
   } else {
-    // Reveal, firing, and spectating all use the overview camera.
+    // Reveal, firing, and spectating all use the overview camera, which zooms in on whoever is alive.
     world.setView({ kind: "overview" });
     world.setFacingMarker(null);
   }
@@ -477,14 +512,20 @@ function renderLobby(): void {
   );
 
   const isHost = state.playerId !== null && state.playerId === state.hostId;
-  const enoughPlayers = state.players.length >= 2;
+  const people = state.players.length;
+  const withBots = ui.bots.checked;
+  const canStart = withBots || people >= 2;
   ui.start.classList.toggle("hidden", !isHost);
-  ui.start.disabled = !enoughPlayers;
-  ui.lobbyNote.textContent = enoughPlayers
-    ? isHost
-      ? "Everyone is in. Start when you're ready."
-      : "Waiting for the host to start."
-    : "Waiting for at least one more player.";
+  ui.botsRow.classList.toggle("hidden", !isHost);
+  ui.start.disabled = !canStart;
+  if (!isHost) {
+    ui.lobbyNote.textContent = "Waiting for the host to start.";
+  } else if (withBots) {
+    const botCount = Math.max(0, ROOM_SIZE - people);
+    ui.lobbyNote.textContent = `${people} ${people === 1 ? "player" : "players"} and ${botCount} ${botCount === 1 ? "bot" : "bots"} will play.`;
+  } else {
+    ui.lobbyNote.textContent = people >= 2 ? "Everyone is in. Start when you're ready." : "Waiting for at least one more player.";
+  }
 }
 
 function renderHud(): void {
@@ -494,6 +535,22 @@ function renderHud(): void {
 
   const target = state.phase === "HIDE" ? state.endsAt : state.phase === "REVEAL" ? state.fireAt : 0;
   ui.timer.textContent = target ? String(Math.max(0, Math.ceil((target - Date.now()) / 1000))) : "--";
+
+  // The big countdown before the lasers fire.
+  const secondsToFire = Math.max(0, Math.ceil((state.fireAt - Date.now()) / 1000));
+  const counting = state.phase === "REVEAL" && secondsToFire > 0;
+  ui.countdown.classList.toggle("hidden", !counting);
+  if (counting) {
+    ui.countdown.textContent = String(secondsToFire);
+    if (secondsToFire !== lastCountdown) {
+      lastCountdown = secondsToFire;
+      audio.playCountdown(secondsToFire === 1);
+      // Restart the pop-in animation for each new number.
+      ui.countdown.style.animation = "none";
+      void ui.countdown.offsetWidth;
+      ui.countdown.style.animation = "";
+    }
+  }
 
   const me = state.me;
   const hiding = state.phase === "HIDE" && me?.alive === true;
@@ -602,6 +659,7 @@ function showScreen(name: ScreenName): void {
 }
 
 function resetToMenu(): void {
+  world.setTitleScene(true);
   state.phase = "LOBBY";
   state.playerId = null;
   state.me = null;

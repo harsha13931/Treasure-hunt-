@@ -1,0 +1,9 @@
+# Render Blueprint. In the Render dashboard choose New > Blueprint and pick this repository.
+# It builds the Dockerfile and runs the game and its WebSocket server as one web service.
+services:
+  - type: web
+    name: laser-ring
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    autoDeploy: true

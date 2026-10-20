@@ -5,6 +5,7 @@ import {
   REVEAL_MS,
   RESULT_MS,
   RING_SHRINK_STEP,
+  ROOM_SIZE,
   START_RING_RADIUS,
   TICK_MS,
   WALK_SPEED,
@@ -237,5 +238,103 @@ describe("Room", () => {
 
     room.handle(a.id, { type: "lock", yaw: 0 });
     expect(lastOf(a, "error")?.message).toBe("You can only lock in during the hide phase.");
+  });
+
+  describe("bots", () => {
+    it("fills a room to eight players when bots are on, even for one person", () => {
+      const room = roomWith([{ x: 0, z: 0, yaw: 0 }]);
+      const a = connect(room, "Ann");
+      room.handle(a.id, { type: "start", bots: true });
+
+      const hide = lastOf(a, "hide");
+      expect(hide?.players).toHaveLength(ROOM_SIZE);
+      expect(hide?.players.filter((p) => p.bot)).toHaveLength(ROOM_SIZE - 1);
+      expect(hide?.players.filter((p) => !p.bot)).toHaveLength(1);
+    });
+
+    it("needs two people when bots are off", () => {
+      const room = roomWith([{ x: 0, z: 0, yaw: 0 }]);
+      const a = connect(room, "Ann");
+      room.handle(a.id, { type: "start", bots: false });
+      expect(lastOf(a, "error")?.message).toContain("at least 2 players");
+      expect(lastOf(a, "hide")).toBeUndefined();
+    });
+
+    it("tops up a half-full room: three people get five bots", () => {
+      const room = new Room("BOTS3");
+      const a = connect(room, "Ann");
+      connect(room, "Ben");
+      connect(room, "Cy");
+      room.handle(a.id, { type: "start", bots: true });
+      const hide = lastOf(a, "hide");
+      expect(hide?.players).toHaveLength(ROOM_SIZE);
+      expect(hide?.players.filter((p) => p.bot)).toHaveLength(5);
+    });
+
+    it("never reveals a bot's position during the hide phase", () => {
+      const room = new Room("BOTS4");
+      const a = connect(room, "Ann");
+      room.handle(a.id, { type: "start", bots: true });
+      vi.advanceTimersByTime(TICK_MS * 10);
+
+      expect(countOf(a, "reveal")).toBe(0);
+      for (const message of a.messages) {
+        if (message.type === "hide") {
+          for (const player of message.players) {
+            expect(player).not.toHaveProperty("x");
+            expect(player).not.toHaveProperty("z");
+          }
+        }
+        // The only position a person ever receives during hide is their own.
+        if (message.type === "self") expect(Object.keys(message)).not.toContain("players");
+      }
+    });
+
+    it("bots lock in as soon as every living person has, so people never wait for them", () => {
+      const room = new Room("BOTS5");
+      const a = connect(room, "Ann");
+      room.handle(a.id, { type: "start", bots: true });
+
+      expect(countOf(a, "reveal")).toBe(0);
+      room.handle(a.id, { type: "lock", yaw: 0 });
+      const reveal = lastOf(a, "reveal");
+      expect(reveal?.players).toHaveLength(ROOM_SIZE);
+      expect(reveal?.players.filter((p) => p.name.startsWith("Bot "))).toHaveLength(ROOM_SIZE - 1);
+    });
+
+    it("bots walk, stay inside the ring, and lock in on their own when the timer ends", () => {
+      const room = new Room("BOTS6");
+      const a = connect(room, "Ann");
+      room.handle(a.id, { type: "start", bots: true });
+
+      vi.advanceTimersByTime(HIDE_MS);
+      const reveal = lastOf(a, "reveal");
+      expect(reveal).toBeDefined();
+      for (const player of reveal?.players ?? []) {
+        expect(Math.hypot(player.x, player.z)).toBeLessThanOrEqual(START_RING_RADIUS);
+      }
+    });
+
+    it("removes the bots when the match ends, and does not let bots keep a room alive", () => {
+      const room = new Room("BOTS7");
+      const a = connect(room, "Ann");
+      room.handle(a.id, { type: "start", bots: true });
+      room.leave(a.id);
+
+      expect(room.isEmpty).toBe(true);
+    });
+
+    it("lets bots finish a match on their own after the last person is out", () => {
+      const room = new Room("BOTS8");
+      const a = connect(room, "Ann");
+      room.handle(a.id, { type: "start", bots: true });
+      room.handle(a.id, { type: "lock", yaw: 0 });
+
+      // Run long enough for several volleys. Quick bots-only volleys must end the match.
+      vi.advanceTimersByTime(10 * 60 * 1000);
+      const over = lastOf(a, "match_over");
+      expect(over).toBeDefined();
+      expect(lastOf(a, "lobby")?.players.every((p) => !p.bot)).toBe(true);
+    });
   });
 });

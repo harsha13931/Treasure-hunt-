@@ -14,7 +14,8 @@ describe("traceBeam", () => {
   });
 
   it("misses a target that is off to the side", () => {
-    const targets: Target[] = [{ id: "a", pos: { x: 5, z: 1 } }];
+    // Clear of the body and the beam width, so it can never touch.
+    const targets: Target[] = [{ id: "a", pos: { x: 5, z: PLAYER_RADIUS + BEAM_HALF_WIDTH + 0.5 } }];
     expect(traceBeam(origin, forward, targets).hit).toBeNull();
   });
 

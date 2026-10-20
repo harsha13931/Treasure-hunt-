@@ -6,6 +6,7 @@ export class Audio {
   private context: AudioContext | null = null;
   private master: GainNode | null = null;
   private shotBuffer: AudioBuffer | null = null;
+  private longNoise: AudioBuffer | null = null;
   private musicTimer: number | null = null;
   private musicNodes: AudioNode[] = [];
   private musicBus: GainNode | null = null;
@@ -91,6 +92,128 @@ export class Audio {
     });
   }
 
+  /** A wet thud when a beam hits someone: a low drop and a short soft burst of noise. */
+  playHit(): void {
+    const ctx = this.ensure();
+    if (!ctx || !this.master || !this.shotBuffer) return;
+    const now = ctx.currentTime;
+
+    const thud = ctx.createOscillator();
+    thud.type = "sine";
+    thud.frequency.setValueAtTime(170, now);
+    thud.frequency.exponentialRampToValueAtTime(42, now + 0.28);
+    const thudGain = ctx.createGain();
+    thudGain.gain.setValueAtTime(0.5, now);
+    thudGain.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+    thud.connect(thudGain).connect(this.master);
+    thud.start(now);
+    thud.stop(now + 0.35);
+
+    const splat = ctx.createBufferSource();
+    splat.buffer = this.shotBuffer;
+    const low = ctx.createBiquadFilter();
+    low.type = "lowpass";
+    low.frequency.value = 1100;
+    const splatGain = ctx.createGain();
+    splatGain.gain.setValueAtTime(0.35, now);
+    splatGain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+    splat.connect(low).connect(splatGain).connect(this.master);
+    splat.start(now);
+    splat.stop(now + 0.25);
+  }
+
+  /** One footstep on steel: a short, dull tick. Pitch varies a little so steps do not sound identical. */
+  playFootstep(): void {
+    const ctx = this.ensure();
+    if (!ctx || !this.master || !this.shotBuffer) return;
+    const now = ctx.currentTime;
+    const source = ctx.createBufferSource();
+    source.buffer = this.shotBuffer;
+    const band = ctx.createBiquadFilter();
+    band.type = "bandpass";
+    band.frequency.value = 260 + Math.random() * 120;
+    band.Q.value = 1.2;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.16, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+    source.connect(band).connect(gain).connect(this.master);
+    source.start(now);
+    source.stop(now + 0.1);
+  }
+
+  /** The beeps before the lasers fire. The last one is higher. */
+  playCountdown(last: boolean): void {
+    const ctx = this.ensure();
+    if (!ctx || !this.master) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = "square";
+    osc.frequency.value = last ? 990 : 660;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.08, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    osc.connect(gain).connect(this.master);
+    osc.start(now);
+    osc.stop(now + 0.2);
+  }
+
+  /** A floor level breaking away: a deep rumble, then metal clanging as the pieces fall. */
+  playCollapse(): void {
+    const ctx = this.ensure();
+    if (!ctx || !this.master || !this.longNoise) return;
+    const now = ctx.currentTime;
+
+    const rumble = ctx.createBufferSource();
+    rumble.buffer = this.longNoise;
+    const low = ctx.createBiquadFilter();
+    low.type = "lowpass";
+    low.frequency.setValueAtTime(220, now);
+    low.frequency.exponentialRampToValueAtTime(70, now + 2.2);
+    const rumbleGain = ctx.createGain();
+    rumbleGain.gain.setValueAtTime(0.0001, now);
+    rumbleGain.gain.exponentialRampToValueAtTime(0.75, now + 0.25);
+    rumbleGain.gain.exponentialRampToValueAtTime(0.001, now + 2.3);
+    rumble.connect(low).connect(rumbleGain).connect(this.master);
+    rumble.start(now);
+    rumble.stop(now + 2.4);
+
+    for (let i = 0; i < 5; i++) {
+      const start = now + 0.15 + Math.random() * 1.4;
+      const clang = ctx.createOscillator();
+      clang.type = "triangle";
+      clang.frequency.value = 180 + Math.random() * 380;
+      const clangGain = ctx.createGain();
+      clangGain.gain.setValueAtTime(0.0001, start);
+      clangGain.gain.exponentialRampToValueAtTime(0.16, start + 0.01);
+      clangGain.gain.exponentialRampToValueAtTime(0.001, start + 0.5);
+      clang.connect(clangGain).connect(this.master);
+      clang.start(start);
+      clang.stop(start + 0.55);
+    }
+  }
+
+  /** A short rising phrase for a win, or a falling one for a loss. */
+  playResult(won: boolean): void {
+    const ctx = this.ensure();
+    if (!ctx || !this.master) return;
+    const notes = won ? [392, 523.25, 659.25, 783.99] : [392, 329.63, 261.63, 196];
+    const now = ctx.currentTime;
+    notes.forEach((freq, i) => {
+      const start = now + i * 0.16;
+      const osc = ctx.createOscillator();
+      osc.type = won ? "triangle" : "sawtooth";
+      osc.frequency.value = freq;
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(won ? 0.16 : 0.08, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.5);
+      osc.connect(gain).connect(this.master!);
+      osc.start(start);
+      osc.stop(start + 0.55);
+    });
+  }
+
   private ensure(): AudioContext | null {
     try {
       if (!this.context) {
@@ -99,6 +222,7 @@ export class Audio {
         this.master.gain.value = 0.7;
         this.master.connect(this.context.destination);
         this.shotBuffer = this.makeNoise(this.context, 0.3);
+        this.longNoise = this.makeNoise(this.context, 2.4);
       }
       if (this.context.state === "suspended") void this.context.resume();
       return this.context;

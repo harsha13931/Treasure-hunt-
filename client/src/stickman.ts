@@ -37,6 +37,10 @@ export class Stickman {
   private moving = false;
   private fallen = 0;
   private alive = true;
+  private recoil = 0;
+  private time = Math.random() * 10;
+  /** Which way the body twists as it falls, so no two falls look the same. */
+  private fallSide = Math.random() < 0.5 ? -1 : 1;
 
   constructor(id: string, name?: string) {
     const color = colorFor(id);
@@ -111,12 +115,32 @@ export class Stickman {
     this.moving = moving;
   }
 
+  get isAlive(): boolean {
+    return this.alive;
+  }
+
   setAlive(alive: boolean): void {
     this.alive = alive;
     if (this.label) this.label.visible = alive;
   }
 
+  /** Kick back from firing: the body jolts away from the muzzle, then settles. */
+  kick(): void {
+    this.recoil = 1;
+  }
+
+  /** Stands the figure back up, as if it had never been hit. Used by the title scene loop. */
+  reset(): void {
+    this.fallen = 0;
+    this.recoil = 0;
+    this.setAlive(true);
+    this.fallSide = Math.random() < 0.5 ? -1 : 1;
+  }
+
   update(dt: number): void {
+    this.time += dt;
+    this.recoil = Math.max(0, this.recoil - dt * 4.5);
+
     // Ease the walk cycle in and out, so legs do not snap.
     this.walk += ((this.moving && this.alive ? 1 : 0) - this.walk) * Math.min(1, dt * 9);
     this.phase += dt * 8.5 * (0.35 + this.walk);
@@ -128,12 +152,19 @@ export class Stickman {
       // The knee bends only while the leg swings forward.
       leg.knee.rotation.x = Math.max(0, -Math.sin(this.phase + (sign > 0 ? 0.5 : Math.PI + 0.5))) * 0.8 * this.walk;
     });
-    this.body.position.y = Math.abs(Math.sin(this.phase)) * 0.05 * this.walk * K;
+    // Bobbing while walking, slow breathing while standing, and a jolt back when firing.
+    const breathe = Math.sin(this.time * 2.1) * 0.012 * (1 - this.walk);
+    this.body.position.y = (Math.abs(Math.sin(this.phase)) * 0.05 * this.walk + breathe) * K;
+    this.body.position.z = -this.recoil * 0.2;
+    this.body.rotation.x = -this.recoil * 0.1;
 
-    // Fall backward when out of the game.
+    // When hit, the figure staggers back and falls: slowly at first, then faster, and it lands with a twist.
     const target = this.alive ? 0 : 1;
-    this.fallen += Math.sign(target - this.fallen) * Math.min(Math.abs(target - this.fallen), dt / 0.7);
-    this.tilt.rotation.x = -this.fallen * (Math.PI / 2);
+    this.fallen += Math.sign(target - this.fallen) * Math.min(Math.abs(target - this.fallen), dt / 0.85);
+    const eased = this.fallen * this.fallen * (3 - 2 * this.fallen);
+    this.tilt.rotation.x = -eased * (Math.PI / 2);
+    this.tilt.rotation.z = this.fallSide * eased * 0.28;
+    this.tilt.position.z = -eased * 0.8;
   }
 
   dispose(): void {

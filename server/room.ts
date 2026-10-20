@@ -9,12 +9,14 @@ import {
   REVEAL_MS,
   RESULT_MS,
   RING_SHRINK_STEP,
+  ROOM_SIZE,
   START_RING_RADIUS,
   TICK_MS,
 } from "../shared/config.js";
-import { resolveVolley, Shooter, Target } from "../shared/geometry.js";
+import { resolveVolley, Shooter, Target, Vec2 } from "../shared/geometry.js";
 import { clampToRing, MoveInput, Pose, startPoseFor, stepPose } from "../shared/movement.js";
 import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../shared/protocol.js";
+import { BotPlan, planBot, stepBot } from "./bot.js";
 
 export type Send = (message: ServerMessage) => void;
 
@@ -27,6 +29,7 @@ interface Player {
   id: string;
   name: string;
   send: Send;
+  bot: boolean;
   alive: boolean;
   locked: boolean;
   pose: Pose;
@@ -34,13 +37,17 @@ interface Player {
   queue: MoveInput[];
   /** Sequence number of the last input the server applied. The browser uses it to reconcile. */
   ack: number;
+  /** What a bot has decided to do. Always null for people. */
+  plan: BotPlan | null;
 }
 
 /** Caps how far a browser can run ahead of the server. About half a second of input. */
 const MAX_QUEUED_INPUTS = 10;
+const BOT_NAMES = ["Ace", "Blitz", "Cobra", "Dash", "Echo", "Fang", "Ghost", "Hawk"];
+const noop: Send = () => {};
 
 /**
- * One match room. The server runs the timers, the movement, the hits, and the ring.
+ * One match room. The server runs the timers, the movement, the hits, the ring, and the bots.
  * The browser only predicts its own movement. It never decides hits or deaths.
  */
 export class Room {
@@ -56,14 +63,17 @@ export class Room {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private spawn: (index: number, count: number) => Pose;
+  /** Where each living player stood at the last reveal. This is public, so bots may use it. */
+  private lastRevealed = new Map<string, Vec2>();
 
   constructor(code: string, options: RoomOptions = {}) {
     this.code = code;
     this.spawn = options.spawn ?? startPoseFor;
   }
 
+  /** A room is empty when no people are left in it. Bots do not keep a room alive. */
   get isEmpty(): boolean {
-    return this.players.size === 0;
+    return this.people().length === 0;
   }
 
   get currentPhase(): Phase {
@@ -79,16 +89,7 @@ export class Room {
       throw new Error("This room is full.");
     }
     const id = randomBytes(8).toString("hex");
-    this.players.set(id, {
-      id,
-      name: sanitizeName(name),
-      send,
-      alive: false,
-      locked: false,
-      pose: { x: 0, z: 0, yaw: 0 },
-      queue: [],
-      ack: 0,
-    });
+    this.players.set(id, this.newPlayer(id, sanitizeName(name), send, false));
     this.hostId ??= id;
 
     send({ type: "joined", code: this.code, playerId: id });
@@ -102,10 +103,11 @@ export class Room {
     this.players.delete(id);
 
     if (this.hostId === id) {
-      this.hostId = this.players.keys().next().value ?? null;
+      this.hostId = this.people()[0]?.id ?? null;
     }
 
     if (this.phase === "HIDE" && player.alive) {
+      // A departing player may have been the one holding up the round.
       player.alive = false;
       if (this.livingPlayers().length < 2) {
         this.endMatch();
@@ -154,8 +156,11 @@ export class Room {
       case "start": {
         if (player.id !== this.hostId) throw new Error("Only the host can start the match.");
         if (this.phase !== "LOBBY" && this.phase !== "MATCH_OVER") throw new Error("A match is already running.");
-        if (this.players.size < MIN_PLAYERS) throw new Error(`You need at least ${MIN_PLAYERS} players.`);
-        this.startMatch();
+        const withBots = message.bots === true;
+        if (!withBots && this.people().length < MIN_PLAYERS) {
+          throw new Error(`You need at least ${MIN_PLAYERS} players, or turn on bots.`);
+        }
+        this.startMatch(withBots);
         return;
       }
 
@@ -168,19 +173,48 @@ export class Room {
     }
   }
 
-  private startMatch(): void {
+  private newPlayer(id: string, name: string, send: Send, bot: boolean): Player {
+    return {
+      id,
+      name,
+      send,
+      bot,
+      alive: false,
+      locked: false,
+      pose: { x: 0, z: 0, yaw: 0 },
+      queue: [],
+      ack: 0,
+      plan: null,
+    };
+  }
+
+  private startMatch(withBots: boolean): void {
     this.clearTimers();
+    this.removeBots();
+
+    if (withBots) {
+      // Fill every empty spot, so a full room always plays.
+      let index = 0;
+      while (this.players.size < ROOM_SIZE) {
+        const id = randomBytes(8).toString("hex");
+        this.players.set(id, this.newPlayer(id, `Bot ${BOT_NAMES[index % BOT_NAMES.length]}`, noop, true));
+        index += 1;
+      }
+    }
+
     const all = [...this.players.values()];
     all.forEach((player, index) => {
       player.alive = true;
       player.locked = false;
       player.queue = [];
       player.ack = 0;
+      player.plan = null;
       player.pose = this.spawn(index, all.length);
     });
     this.radius = START_RING_RADIUS;
     this.noKillStreak = 0;
     this.volley = 0;
+    this.lastRevealed.clear();
     this.enterHide();
   }
 
@@ -193,9 +227,14 @@ export class Room {
     this.volley += 1;
     this.phase = "HIDE";
     this.endsAt = Date.now() + HIDE_MS;
+
+    // When no person is left alive, the bots finish the match quickly so spectators are not kept waiting.
+    const quick = this.livingPlayers().every((player) => player.bot);
+    const known = [...this.lastRevealed.values()];
     for (const player of this.livingPlayers()) {
       player.locked = false;
       player.queue = [];
+      player.plan = player.bot ? planBot(this.radius, known, quick, Date.now()) : null;
     }
 
     this.sendHideToAll();
@@ -210,16 +249,23 @@ export class Room {
 
   /** Runs one simulation step for every living player who is still moving. */
   private tick(): void {
+    const now = Date.now();
     for (const player of this.livingPlayers()) {
       if (!player.locked) {
-        const input = player.queue.shift();
-        if (input) {
-          player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.radius);
-          player.ack = input.seq;
+        if (player.bot && player.plan) {
+          player.pose = stepBot(player.pose, player.plan, this.radius, TICK_MS / 1000);
+          if (now >= player.plan.lockAt) player.locked = true;
+        } else {
+          const input = player.queue.shift();
+          if (input) {
+            player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.radius);
+            player.ack = input.seq;
+          }
         }
       }
       this.sendSelf(player);
     }
+    this.revealIfEveryoneLocked();
   }
 
   /** Applies any queued movement, then freezes the player in place facing the given yaw. */
@@ -233,10 +279,22 @@ export class Room {
     player.locked = true;
   }
 
+  /**
+   * Reveals once everyone has locked in. When every living person has locked in,
+   * the bots lock in too, so people never wait on a bot that is still walking.
+   */
   private revealIfEveryoneLocked(): void {
     if (this.phase !== "HIDE") return;
     const living = this.livingPlayers();
-    if (living.length >= 2 && living.every((player) => player.locked)) {
+    if (living.length < 2) return;
+
+    const people = living.filter((player) => !player.bot);
+    if (people.length > 0 && people.every((player) => player.locked)) {
+      for (const bot of living) {
+        if (bot.bot) bot.locked = true;
+      }
+    }
+    if (living.every((player) => player.locked)) {
       this.enterReveal();
     }
   }
@@ -245,13 +303,19 @@ export class Room {
     this.clearTimers();
     this.phase = "REVEAL";
     const fireAt = Date.now() + REVEAL_MS;
-    const players: RevealPlayer[] = this.livingPlayers().map((player) => ({
+    const living = this.livingPlayers();
+    const players: RevealPlayer[] = living.map((player) => ({
       id: player.id,
       name: player.name,
       x: player.pose.x,
       z: player.pose.z,
       yaw: player.pose.yaw,
     }));
+
+    // Positions are public from this moment on, so bots may use them in later volleys.
+    this.lastRevealed.clear();
+    for (const player of living) this.lastRevealed.set(player.id, { x: player.pose.x, z: player.pose.z });
+
     this.broadcast({ type: "reveal", volley: this.volley, fireAt, radius: this.radius, players });
     this.schedule(REVEAL_MS, () => this.enterFire());
   }
@@ -266,6 +330,7 @@ export class Room {
     for (const id of eliminated) {
       const player = this.players.get(id);
       if (player) player.alive = false;
+      this.lastRevealed.delete(id);
     }
     this.lastKills = eliminated.length;
 
@@ -302,11 +367,19 @@ export class Room {
     this.phase = "MATCH_OVER";
     const survivors = this.livingPlayers();
     const winnerId = survivors.length === 1 ? survivors[0].id : null;
+    // Tell everyone who won while the bots are still in the list, then send the bots home.
     this.broadcast({ type: "match_over", winnerId, players: this.publicPlayers() });
+    this.removeBots();
     this.broadcastLobby();
   }
 
   // ----- helpers -----
+
+  private removeBots(): void {
+    for (const [id, player] of this.players) {
+      if (player.bot) this.players.delete(id);
+    }
+  }
 
   private schedule(ms: number, fn: () => void): void {
     if (this.timer) clearTimeout(this.timer);
@@ -323,6 +396,10 @@ export class Room {
     this.tickTimer = null;
   }
 
+  private people(): Player[] {
+    return [...this.players.values()].filter((player) => !player.bot);
+  }
+
   private livingPlayers(): Player[] {
     return [...this.players.values()].filter((player) => player.alive);
   }
@@ -332,6 +409,7 @@ export class Room {
       id: player.id,
       name: player.name,
       alive: player.alive,
+      bot: player.bot,
     }));
   }
 
@@ -352,6 +430,7 @@ export class Room {
   private sendHideToAll(): void {
     const players = this.publicPlayers();
     for (const player of this.players.values()) {
+      if (player.bot) continue;
       player.send({
         type: "hide",
         volley: this.volley,
@@ -370,7 +449,7 @@ export class Room {
   }
 
   private sendSelf(player: Player): void {
-    if (!player.alive) return;
+    if (!player.alive || player.bot) return;
     player.send({
       type: "self",
       x: player.pose.x,
@@ -382,7 +461,9 @@ export class Room {
   }
 
   private broadcast(message: ServerMessage): void {
-    for (const player of this.players.values()) player.send(message);
+    for (const player of this.players.values()) {
+      if (!player.bot) player.send(message);
+    }
   }
 }
 
