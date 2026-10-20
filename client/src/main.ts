@@ -1,8 +1,9 @@
 import { ROOM_CODE_LENGTH, ROOM_SIZE, START_RING_RADIUS, TICK_MS, type BotDifficulty } from "../../shared/config.js";
-import type { Beam } from "../../shared/geometry.js";
+import type { Beam, Kill } from "../../shared/geometry.js";
 import { facing, stepPose, type MoveInput, type Pose } from "../../shared/movement.js";
-import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../../shared/protocol.js";
+import type { ClientMessage, EdgeWarning, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../../shared/protocol.js";
 import { Audio } from "./audio.js";
+import { colorFor } from "./stickman.js";
 import { FloatingJoystick, HoldButton } from "./touch.js";
 import { World } from "./world.js";
 
@@ -13,10 +14,13 @@ type ScreenName = (typeof SCREENS)[number];
 
 /** Simulation step in seconds. Matches the server exactly so the prediction lines up. */
 const DT = TICK_MS / 1000;
-const MOUSE_SENSITIVITY = 0.0025;
-const KEY_TURN_SPEED = 2.2;
+const MOUSE_SENSITIVITY = 0.0017;
+const KEY_TURN_SPEED = 1.5;
 /** Fastest turn when the turn stick is pushed all the way over, in radians per second. */
-const STICK_TURN_SPEED = 2.8;
+const STICK_TURN_SPEED = 1.9;
+/** How long a line stays in the elimination feed. */
+const FEED_MS = 7000;
+const FEED_MAX = 5;
 const isTouchDevice = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
 
 interface Me {
@@ -53,6 +57,8 @@ const state = {
   endsAt: 0,
   fireAt: 0,
   radius: START_RING_RADIUS,
+  nextRadius: START_RING_RADIUS,
+  edge: "none" as EdgeWarning,
   me: null as Me | null,
   /** Our position predicted by stepping our own inputs, and the step before it (for smoothing). */
   current: { x: 0, z: 0, yaw: 0, vx: 0, vz: 0 } as Pose,
@@ -141,6 +147,8 @@ const ui = {
   leaveGame: byId<HTMLButtonElement>("leave-game"),
   countdown: byId("countdown"),
   banner: byId("banner"),
+  feed: byId("killfeed"),
+  edgeWarning: byId("edge-warning"),
   toast: byId("toast"),
 };
 
@@ -165,6 +173,7 @@ if (new URLSearchParams(location.search).has("perf")) startPerfOverlay();
 world.onSound = (sound) => {
   if (sound === "shot") audio.playShot();
   else if (sound === "hit") audio.playHit();
+  else if (sound === "fall") audio.playFall();
   else audio.playCollapse();
 };
 
@@ -411,13 +420,15 @@ function handle(message: ServerMessage): void {
       break;
 
     case "fire":
-      onFire(message.beams, message.eliminated);
+      onFire(message.beams, message.eliminated, message.kills ?? []);
       break;
 
     case "ring":
       state.radius = message.radius;
+      state.edge = "none";
+      world.setDanger(null);
       world.setRing(message.radius);
-      showBanner("The floor breaks away");
+      onFallen(message.fallen ?? []);
       break;
 
     case "match_over":
@@ -456,13 +467,19 @@ function onLobby(): void {
 function onHide(message: Extract<ServerMessage, { type: "hide" }>): void {
   showScreen("game");
   state.phase = "HIDE";
+  audio.setIntensity(0.45);
   state.showResults = false;
   state.volley = message.volley;
   state.endsAt = message.endsAt;
   state.radius = message.radius;
+  state.nextRadius = message.nextRadius;
+  state.edge = message.edge;
   state.players = message.players;
   state.revealed = [];
   world.setRing(message.radius, false);
+  world.setDanger(
+    message.edge === "none" ? null : { inner: message.nextRadius, outer: message.radius, level: message.edge === "certain" ? "certain" : "possible" },
+  );
   world.clearBeams();
 
   const you = message.you;
@@ -512,6 +529,7 @@ function onSelf(message: Extract<ServerMessage, { type: "self" }>): void {
 
 function onReveal(message: Extract<ServerMessage, { type: "reveal" }>): void {
   state.phase = "REVEAL";
+  audio.setIntensity(1);
   state.volley = message.volley;
   state.fireAt = message.fireAt;
   state.radius = message.radius;
@@ -540,7 +558,7 @@ function onReveal(message: Extract<ServerMessage, { type: "reveal" }>): void {
   showBanner("Revealed");
 }
 
-function onFire(beams: Beam[], eliminated: string[]): void {
+function onFire(beams: Beam[], eliminated: string[], kills: Kill[]): void {
   state.phase = "FIRE";
   world.fire(beams);
 
@@ -549,17 +567,81 @@ function onFire(beams: Beam[], eliminated: string[]): void {
     const player = state.players.find((p) => p.id === id);
     if (player) player.alive = false;
   }
-  if (eliminated.length > 0) {
-    const names = eliminated.map((id) => nameOf(id));
-    showBanner(names.length === 1 ? `${names[0]} is out` : `${names.join(" and ")} are out`);
+
+  // Announce every knock-out by name: who went down, and whose laser did it.
+  for (const kill of kills) {
+    addFeed(kill.victim, `was eliminated by`, kill.killers);
+  }
+  if (kills.length === 1) {
+    const kill = kills[0];
+    showBanner(`${displayName(kill.victim)} ${kill.victim === state.playerId ? "were" : "was"} eliminated by ${joinNames(kill.killers)}`, 2600);
+  } else if (kills.length > 1) {
+    showBanner(`${kills.length} players eliminated`, 2200);
   } else {
     showBanner("Fire!", 900);
   }
   if (state.me && eliminated.includes(state.me.id)) {
     state.me.alive = false;
     audio.playEliminated();
-    showToast("You were hit. You are out of the match.");
+    const by = kills.find((k) => k.victim === state.me?.id)?.killers ?? [];
+    showToast(by.length ? `${joinNames(by)} eliminated you. You are out of the match.` : "You were hit. You are out of the match.");
   }
+}
+
+/** The outer ice broke. Anyone standing on it falls with it. */
+function onFallen(fallen: string[]): void {
+  if (fallen.length === 0) {
+    showBanner("The floor breaks away");
+    return;
+  }
+  for (const id of fallen) {
+    const player = state.players.find((p) => p.id === id);
+    if (player) player.alive = false;
+    addFeed(id, "fell into the crevasse", []);
+  }
+  world.plunge(fallen);
+  const first = fallen[0];
+  showBanner(
+    fallen.length === 1
+      ? `${displayName(first)} fell into the crevasse`
+      : `${fallen.length} players fell into the crevasse`,
+    2600,
+  );
+  if (state.me && fallen.includes(state.me.id)) {
+    state.me.alive = false;
+    audio.playEliminated();
+    showToast("The ice broke under you. You are out of the match.");
+  }
+}
+
+/** "You" for the local player, and the player's name for everyone else. */
+function displayName(id: string): string {
+  return id === state.playerId ? "You" : nameOf(id);
+}
+
+function joinNames(ids: string[]): string {
+  const names = ids.map((id) => displayName(id));
+  return names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/** Adds one line to the elimination feed, with player names in their own colors. */
+function addFeed(victim: string, action: string, killers: string[]): void {
+  const line = document.createElement("li");
+  const name = (id: string): HTMLElement => {
+    const span = document.createElement("strong");
+    span.textContent = displayName(id);
+    span.style.color = colorFor(id);
+    return span;
+  };
+  const wording = victim === state.playerId ? action.replace(/^was /, "were ") : action;
+  line.append(name(victim), textNode(` ${wording}`));
+  killers.forEach((id, index) => {
+    line.append(textNode(index === 0 ? " " : index === killers.length - 1 ? " and " : ", "), name(id));
+  });
+  if (victim === state.playerId || killers.includes(state.playerId ?? "")) line.classList.add("mine");
+  ui.feed.prepend(line);
+  while (ui.feed.children.length > FEED_MAX) ui.feed.lastElementChild?.remove();
+  window.setTimeout(() => line.remove(), FEED_MS);
 }
 
 function onMatchOver(message: Extract<ServerMessage, { type: "match_over" }>): void {
@@ -572,6 +654,7 @@ function onMatchOver(message: Extract<ServerMessage, { type: "match_over" }>): v
 
   state.me = null;
   world.setCharacters([]);
+  world.setDanger(null);
   state.showResults = wasPlaying;
   renderResults();
   if (wasPlaying) showScreen("results");
@@ -590,7 +673,10 @@ function loop(now: number): void {
   }
   if (me && canTurn()) {
     // Pushing right turns right, which lowers the yaw. The joystick and the turn buttons both count.
-    const turn = clampUnit(lookStick.value.x + axis(turnRightButton.pressed, turnLeftButton.pressed));
+    // A light push turns slowly and a full push turns fast, so small corrections are easy while walking in a curve.
+    const stick = lookStick.value.x;
+    const eased = stick * (0.35 + 0.65 * Math.abs(stick));
+    const turn = clampUnit(eased + axis(turnRightButton.pressed, turnLeftButton.pressed));
     me.yaw = wrapAngle(me.yaw - turn * STICK_TURN_SPEED * dt);
   }
 
@@ -701,6 +787,7 @@ function showScreen(name: ScreenName): void {
   }
   // Menus play over the title duel. The match itself has its own camera.
   world.setTitleScene(name !== "game");
+  if (name !== "game") audio.setIntensity(0.3);
   ui.leaveGame.classList.toggle("hidden", name !== "game");
   if (name === "online") ui.menuError.textContent = "";
   if (name === "lobby") renderLobby();
@@ -820,6 +907,18 @@ function renderHud(): void {
     }
   }
 
+  const warn = hiding && state.edge !== "none";
+  ui.edgeWarning.classList.toggle("hidden", !warn);
+  ui.edgeWarning.classList.toggle("certain", state.edge === "certain");
+  if (warn) {
+    setText(
+      ui.edgeWarning,
+      state.edge === "certain"
+        ? "The outer ice WILL break after this round. Stay inside the line."
+        : "The outer ice breaks if nobody gets hit this round. Stay inside the line.",
+    );
+  }
+
   const inMatch = state.screen === "game";
   const outOfGame = inMatch && state.phase !== "LOBBY" && state.phase !== "MATCH_OVER" && (!me || !me.alive);
   ui.spectating.classList.toggle("hidden", !outOfGame);
@@ -890,6 +989,15 @@ function drawMinimap(): void {
   ctx.stroke();
   ctx.restore();
 
+  if (state.edge !== "none" && state.phase !== "LOBBY") {
+    // The band that falls away if the ice breaks.
+    ctx.beginPath();
+    ctx.arc(half, half, state.radius * scale - 1, 0, Math.PI * 2);
+    ctx.arc(half, half, state.nextRadius * scale, 0, Math.PI * 2, true);
+    ctx.fillStyle = state.edge === "certain" ? "rgba(255, 59, 48, 0.4)" : "rgba(255, 176, 32, 0.35)";
+    ctx.fill("evenodd");
+  }
+
   const dot = (x: number, z: number, color: string, radius: number) => {
     const p = toPx(x, z);
     ctx.beginPath();
@@ -942,6 +1050,8 @@ function resetToHome(): void {
   state.lastSolo = null;
   state.startsAt = null;
   world.setCharacters([]);
+  world.setDanger(null);
+  ui.feed.replaceChildren();
   showScreen("home");
   setText(ui.timer, "--");
 }

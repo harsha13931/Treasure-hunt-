@@ -930,3 +930,92 @@ body.touch .leave-chip {
   align-self: start;
   margin-top: 4vh;
 }
+
+/* ---- Elimination feed and edge warning ---- */
+
+.killfeed {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+  max-width: min(46vw, 380px);
+  pointer-events: none;
+}
+
+.killfeed li {
+  padding: 6px 12px;
+  font-size: 0.9rem;
+  color: #eef4fa;
+  background: rgba(10, 16, 26, 0.78);
+  border-left: 3px solid #5b6b7e;
+  border-radius: 8px;
+  animation: feed-in 0.28s ease both;
+}
+
+.killfeed li.mine {
+  border-left-color: #ff6a3d;
+  background: rgba(60, 24, 14, 0.85);
+}
+
+.killfeed strong {
+  font-weight: 800;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  filter: brightness(1.35);
+}
+
+@keyframes feed-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+
+.edge-warning {
+  position: absolute;
+  top: 104px;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 6px 14px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #1a1203;
+  background: #ffb020;
+  border-radius: 999px;
+  text-align: center;
+  pointer-events: none;
+  animation: warn 1.4s ease-in-out infinite;
+}
+
+@keyframes warn {
+  50% {
+    opacity: 0.72;
+  }
+}
+
+.edge-warning.certain {
+  color: #fff;
+  background: #e0301f;
+}
+
+body.touch .killfeed {
+  top: 104px;
+  right: 12px;
+  max-width: 44vw;
+}
+
+body.touch .killfeed li {
+  padding: 4px 9px;
+  font-size: 0.75rem;
+}
+
+body.touch .edge-warning {
+  top: 56px;
+  font-size: 0.72rem;
+  padding: 4px 10px;
+}

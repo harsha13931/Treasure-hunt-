@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import { MUZZLE_FORWARD, PLAYER_HEIGHT, BEAM_HEIGHT } from "../../shared/config.js";
+import { MUZZLE_FORWARD, PLAYER_HEIGHT, BEAM_HEIGHT, PIT_DEPTH } from "../../shared/config.js";
 
 // The figure is modelled for a 1.8 m person and scaled up to the game's height.
 const K = PLAYER_HEIGHT / 1.8;
@@ -40,6 +40,10 @@ export class Stickman {
   private fallen = 0;
   private alive = true;
   private recoil = 0;
+  /** Set when the ice under this figure breaks. It waits a moment, then drops into the crevasse. */
+  private plunging = false;
+  private plungeDelay = 0;
+  private plungeSpeed = 0;
   private time = Math.random() * 10;
   /** Which way the body twists as it falls, so no two falls look the same. */
   private fallSide = Math.random() < 0.5 ? -1 : 1;
@@ -132,6 +136,11 @@ export class Stickman {
 
   setAlive(alive: boolean): void {
     this.alive = alive;
+    if (alive) {
+      this.plunging = false;
+      this.root.visible = true;
+      this.root.position.y = 0;
+    }
     if (this.label) this.label.visible = alive;
   }
 
@@ -140,10 +149,20 @@ export class Stickman {
     this.recoil = 1;
   }
 
+  /** The floor gives way under this figure. */
+  plunge(delay: number): void {
+    this.plunging = true;
+    this.plungeDelay = delay;
+    this.plungeSpeed = 0;
+    this.setAlive(false);
+    this.plunging = true;
+  }
+
   /** Stands the figure back up, as if it had never been hit. Used by the title scene loop. */
   reset(): void {
     this.fallen = 0;
     this.recoil = 0;
+    this.root.rotation.z = 0;
     this.setAlive(true);
     this.fallSide = Math.random() < 0.5 ? -1 : 1;
   }
@@ -170,7 +189,19 @@ export class Stickman {
     this.body.rotation.x = -this.recoil * 0.1;
 
     // When hit, the figure staggers back and falls: slowly at first, then faster, and it lands with a twist.
-    const target = this.alive ? 0 : 1;
+    if (this.plunging) {
+      if (this.plungeDelay > 0) {
+        this.plungeDelay -= dt;
+      } else {
+        // Falling: speeds up like the slabs do, tumbling as it goes.
+        this.plungeSpeed += 30 * dt;
+        this.root.position.y -= this.plungeSpeed * dt;
+        this.root.rotation.z += 1.6 * dt;
+        if (this.root.position.y < -PIT_DEPTH) this.root.visible = false;
+      }
+    }
+    // A figure that is about to fall with the ice stays upright until the ice lets go.
+    const target = this.alive || (this.plunging && this.plungeDelay > 0) ? 0 : 1;
     this.fallen += Math.sign(target - this.fallen) * Math.min(Math.abs(target - this.fallen), dt / 0.85);
     const eased = this.fallen * this.fallen * (3 - 2 * this.fallen);
     this.tilt.rotation.x = -eased * (Math.PI / 2);

@@ -19,7 +19,7 @@ import {
 } from "../shared/config.js";
 import { resolveVolley, Shooter, Target, Vec2 } from "../shared/geometry.js";
 import { clampToRing, MoveInput, Pose, startPoseFor, stepPose } from "../shared/movement.js";
-import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../shared/protocol.js";
+import type { ClientMessage, EdgeWarning, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../shared/protocol.js";
 import { BotPlan, planBot, stepBot } from "./bot.js";
 
 export type Send = (message: ServerMessage) => void;
@@ -259,7 +259,7 @@ export class Room {
     for (const player of this.livingPlayers()) {
       player.locked = false;
       player.queue = [];
-      player.plan = player.bot ? planBot(this.radius, known, quick, Date.now(), this.botSkill) : null;
+      player.plan = player.bot ? planBot(this.botPlanRadius(), known, quick, Date.now(), this.botSkill) : null;
     }
 
     this.sendHideToAll();
@@ -352,7 +352,7 @@ export class Room {
     const shooters: Shooter[] = living.map((player) => ({ id: player.id, pos: player.pose, yaw: player.pose.yaw }));
     const targets: Target[] = living.map((player) => ({ id: player.id, pos: player.pose }));
 
-    const { beams, eliminated } = resolveVolley(shooters, targets);
+    const { beams, eliminated, kills } = resolveVolley(shooters, targets);
     for (const id of eliminated) {
       const player = this.players.get(id);
       if (player) player.alive = false;
@@ -361,7 +361,7 @@ export class Room {
     }
     this.lastKills = eliminated.length;
 
-    this.broadcast({ type: "fire", beams, eliminated });
+    this.broadcast({ type: "fire", beams, eliminated, kills });
     this.schedule(FIRE_MS, () => this.afterFire());
   }
 
@@ -382,15 +382,50 @@ export class Room {
     this.schedule(RESULT_MS, () => this.enterHide());
   }
 
-  /** Shrinks the ring one step and pushes any player outside it back to the new edge. */
+  /** The radius the floor will have after the next shrink. */
+  private nextRadius(): number {
+    return Math.max(MIN_RING_RADIUS, this.radius - RING_SHRINK_STEP);
+  }
+
+  /** Tells players, before they move, whether the outer ice might break after this volley. */
+  private edgeWarning(): EdgeWarning {
+    if (this.radius - MIN_RING_RADIUS < 1e-6) return "none";
+    if (this.volleysSinceShrink + 1 >= FORCED_SHRINK_EVERY_VOLLEYS) return "certain";
+    // A round with no kill adds to the streak, so a streak one short of the limit means a quiet round breaks the edge.
+    if (this.noKillStreak + 1 >= NO_KILL_VOLLEYS_BEFORE_SHRINK) return "possible";
+    return "none";
+  }
+
+  /** Bots read the same warning a person sees, and the better ones keep clear of an edge that may break. */
+  private botPlanRadius(): number {
+    const edge = this.edgeWarning();
+    if (edge === "certain") return this.nextRadius();
+    if (edge === "possible" && Math.random() < 0.3 + 0.7 * this.botSkill) return this.nextRadius();
+    return this.radius;
+  }
+
+  /**
+   * Shrinks the ring one step. The outer ice breaks away and falls, so anyone standing on it falls too
+   * and is out of the match.
+   */
   private shrinkRing(): void {
-    this.radius = Math.max(MIN_RING_RADIUS, this.radius - RING_SHRINK_STEP);
+    this.radius = this.nextRadius();
     this.noKillStreak = 0;
     this.volleysSinceShrink = 0;
+
+    const fallen: string[] = [];
     for (const player of this.livingPlayers()) {
-      player.pose = clampToRing(player.pose, this.radius);
+      // Standing past the new edge means standing over the crevasse. Anyone still on the ice is kept in bounds.
+      if (Math.hypot(player.pose.x, player.pose.z) > this.radius) {
+        player.alive = false;
+        this.lastRevealed.delete(player.id);
+        this.knockedOut.push(player.id);
+        fallen.push(player.id);
+      } else {
+        player.pose = clampToRing(player.pose, this.radius);
+      }
     }
-    this.broadcast({ type: "ring", radius: this.radius });
+    this.broadcast({ type: "ring", radius: this.radius, fallen });
   }
 
   private endMatch(): void {
@@ -503,6 +538,8 @@ export class Room {
         volley: this.volley,
         endsAt: this.endsAt,
         radius: this.radius,
+        nextRadius: this.nextRadius(),
+        edge: this.edgeWarning(),
         you: {
           alive: player.alive,
           x: player.pose.x,

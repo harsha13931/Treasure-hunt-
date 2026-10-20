@@ -1,4 +1,4 @@
-import type { Beam } from "./geometry.js";
+import type { Beam, Kill } from "./geometry.js";
 import type { BotDifficulty } from "./config.js";
 import type { MoveInput } from "./movement.js";
 
@@ -17,6 +17,9 @@ export type ClientMessage =
       difficulty?: BotDifficulty;
     }
   | { type: "leave" };
+
+/** Whether the outer ice may break after the coming volley. */
+export type EdgeWarning = "none" | "possible" | "certain";
 
 export type Phase = "LOBBY" | "HIDE" | "REVEAL" | "FIRE" | "RESULT" | "MATCH_OVER";
 
@@ -55,6 +58,9 @@ export type ServerMessage =
       volley: number;
       endsAt: number;
       radius: number;
+      /** Radius the floor would shrink to. Anyone standing outside it when it breaks falls. */
+      nextRadius: number;
+      edge: EdgeWarning;
       you: { alive: boolean; x: number; z: number; yaw: number; vx: number; vz: number; locked: boolean };
       players: PublicPlayer[];
     }
@@ -77,8 +83,9 @@ export type ServerMessage =
       radius: number;
       players: RevealPlayer[];
     }
-  | { type: "fire"; beams: Beam[]; eliminated: string[] }
-  | { type: "ring"; radius: number }
+  | { type: "fire"; beams: Beam[]; eliminated: string[]; kills: Kill[] }
+  /** The outer ice broke away. Everyone listed in `fallen` was standing on it and fell into the crevasse. */
+  | { type: "ring"; radius: number; fallen: string[] }
   | {
       type: "match_over";
       winnerId: string | null;

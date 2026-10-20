@@ -241,6 +241,68 @@ describe("Room", () => {
     expect(lastOf(a, "error")?.message).toBe("You can only lock in during the hide phase.");
   });
 
+  it("a player standing on the outer ice when it breaks falls and is out", () => {
+    const edge = START_RING_RADIUS - 1; // as far out as the ring lets anyone stand
+    const room = roomWith([
+      { x: -5, z: 0, yaw: FACE_NORTH },
+      { x: 5, z: 0, yaw: FACE_NORTH },
+      { x: edge, z: 0, yaw: FACE_EAST },
+    ]);
+    const a = connect(room, "Ann");
+    const b = connect(room, "Ben");
+    const c = connect(room, "Cy");
+    room.handle(a.id, { type: "start" });
+    const volleyLength = REVEAL_MS + FIRE_MS + RESULT_MS;
+    const lock = () => lockAll(room, [a, b, c], [FACE_NORTH, FACE_NORTH, FACE_EAST]);
+
+    // Nobody can fall until the ice actually breaks.
+    expect(lastOf(a, "hide")?.edge).toBe("none");
+    lock();
+    vi.advanceTimersByTime(volleyLength);
+    // One quiet volley is already on the books, so a second quiet one will break the edge. Players are told.
+    expect(lastOf(a, "hide")?.edge).toBe("possible");
+    expect(lastOf(a, "hide")?.nextRadius).toBeCloseTo(START_RING_RADIUS - RING_SHRINK_STEP, 6);
+
+    lock();
+    vi.advanceTimersByTime(REVEAL_MS + FIRE_MS + RESULT_MS);
+    expect(lastOf(a, "ring")?.fallen).toEqual([c.id]);
+
+    // Cy is out for good and the other two carry on.
+    expect(lastOf(c, "hide")?.you.alive).toBe(false);
+    expect(lastOf(a, "hide")?.players.find((p) => p.id === c.id)?.alive).toBe(false);
+    expect(lastOf(a, "hide")?.you.alive).toBe(true);
+  });
+
+  it("a player inside the new edge survives the floor breaking", () => {
+    const room = roomWith([
+      { x: -5, z: 0, yaw: FACE_NORTH },
+      { x: START_RING_RADIUS - RING_SHRINK_STEP - 0.5, z: 0, yaw: FACE_EAST },
+    ]);
+    const a = connect(room, "Ann");
+    const b = connect(room, "Ben");
+    room.handle(a.id, { type: "start" });
+    const volleyLength = REVEAL_MS + FIRE_MS + RESULT_MS;
+    for (let i = 0; i < 2; i++) {
+      lockAll(room, [a, b], [FACE_NORTH, FACE_EAST]);
+      vi.advanceTimersByTime(volleyLength);
+    }
+    expect(lastOf(a, "ring")?.fallen).toEqual([]);
+    expect(lastOf(b, "hide")?.you.alive).toBe(true);
+  });
+
+  it("says who was knocked out and by whom", () => {
+    const room = roomWith([
+      { x: -5, z: 0, yaw: FACE_EAST },
+      { x: 5, z: 0, yaw: FACE_NORTH },
+    ]);
+    const a = connect(room, "Ann");
+    const b = connect(room, "Ben");
+    room.handle(a.id, { type: "start" });
+    lockAll(room, [a, b], [FACE_EAST, FACE_NORTH]);
+    vi.advanceTimersByTime(REVEAL_MS + 10);
+    expect(lastOf(a, "fire")?.kills).toEqual([{ victim: b.id, killers: [a.id] }]);
+  });
+
   it("also shrinks the ring every few volleys, even when there are kills", () => {
     // Five players in a row. Player 0 faces east and knocks out one more player each volley,
     // so there is a kill every time and the "nobody was hit" rule never applies.

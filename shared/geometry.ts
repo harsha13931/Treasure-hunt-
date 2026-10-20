@@ -19,6 +19,12 @@ export interface Beam {
   hit: string | null;
 }
 
+/** Who was knocked out, and whose beams did it. Several shooters can hit the same player. */
+export interface Kill {
+  victim: string;
+  killers: string[];
+}
+
 export interface Shooter {
   id: string;
   pos: Vec2;
@@ -67,9 +73,10 @@ export function traceBeam(origin: Vec2, dir: Vec2, targets: Target[]): { to: Vec
  * Fires every living player's beam at once against the same snapshot of living players.
  * A player who is hit still gets to fire in this volley.
  */
-export function resolveVolley(shooters: Shooter[], alive: Target[]): { beams: Beam[]; eliminated: string[] } {
+export function resolveVolley(shooters: Shooter[], alive: Target[]): { beams: Beam[]; eliminated: string[]; kills: Kill[] } {
   const beams: Beam[] = [];
   const eliminated = new Set<string>();
+  const killers = new Map<string, string[]>();
 
   for (const shooter of shooters) {
     const origin = muzzlePosition(shooter.pos, shooter.yaw);
@@ -77,9 +84,13 @@ export function resolveVolley(shooters: Shooter[], alive: Target[]): { beams: Be
     const targets = alive.filter((t) => t.id !== shooter.id);
     const { to, hit } = traceBeam(origin, dir, targets);
     beams.push({ shooter: shooter.id, from: origin, to, hit });
-    if (hit) eliminated.add(hit);
+    if (hit) {
+      eliminated.add(hit);
+      killers.set(hit, [...(killers.get(hit) ?? []), shooter.id]);
+    }
   }
 
-  return { beams, eliminated: [...eliminated] };
+  const kills = [...killers].map(([victim, by]) => ({ victim, killers: by }));
+  return { beams, eliminated: [...eliminated], kills };
 }
 

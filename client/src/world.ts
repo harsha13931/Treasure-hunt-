@@ -34,7 +34,7 @@ export type CameraView =
   | { kind: "title" };
 
 /** Sounds the world asks the page to play, so the world itself stays free of audio. */
-export type WorldSound = "shot" | "hit" | "collapse";
+export type WorldSound = "shot" | "hit" | "collapse" | "fall";
 
 interface TimedBeam {
   group: THREE.Group;
@@ -59,6 +59,8 @@ interface Tile {
 const BAR_COUNT = 80;
 const CAGE_HEIGHT = 9;
 const CAGE_CLOSE_SPEED = 3.2; // meters per second that the cage closes in
+/** How quickly the camera catches up with the player's facing, per second. Lower is calmer. */
+const CAMERA_TURN_RATE = 5;
 const CAGE_CLOSE_DELAY = 0.7; // seconds the cage waits while the floor breaks away
 const SLAB_THICKNESS = 0.9;
 const MIN_PIXEL_RATIO = 0.7;
@@ -125,6 +127,10 @@ export class World {
   private lowPower = false;
   private sun!: THREE.DirectionalLight;
   private fallingCount = 0;
+  /** Which way the follow camera looks. It trails the player's real facing a little, so turning feels calm. */
+  private cameraYaw = 0;
+  private followActive = false;
+  private danger: THREE.Group | null = null;
   /** Reused every frame, so the render loop creates no garbage. */
   private scratch = {
     desired: new THREE.Vector3(),
@@ -270,6 +276,52 @@ export class World {
       this.shake(0.9);
       this.onSound?.("collapse");
     }
+  }
+
+  /**
+   * Marks the outer band of ice that may break after this round, so nobody can say they were not warned.
+   * Pass null to clear it.
+   */
+  setDanger(zone: { inner: number; outer: number; level: "possible" | "certain" } | null): void {
+    if (this.danger) {
+      this.scene.remove(this.danger);
+      this.danger.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          child.geometry.dispose();
+          (child.material as THREE.Material).dispose();
+        }
+      });
+      this.danger = null;
+    }
+    if (!zone) return;
+
+    const color = zone.level === "certain" ? "#ff3b30" : "#ffb020";
+    const group = new THREE.Group();
+    const band = new THREE.Mesh(
+      new THREE.RingGeometry(zone.inner, zone.outer, 96, 1).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.2, depthWrite: false, side: THREE.DoubleSide }),
+    );
+    const edge = new THREE.Mesh(
+      new THREE.RingGeometry(zone.inner - 0.09, zone.inner + 0.09, 96, 1).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.DoubleSide }),
+    );
+    band.position.y = 0.04;
+    edge.position.y = 0.05;
+    group.add(band, edge);
+    this.scene.add(group);
+    this.danger = group;
+  }
+
+  /** These players were standing on ice that just broke. They fall with it, into the crevasse. */
+  plunge(ids: string[]): void {
+    let any = false;
+    for (const id of ids) {
+      const character = this.characters.get(id);
+      if (!character) continue;
+      character.plunge(Math.random() * 0.5);
+      any = true;
+    }
+    if (any) this.onSound?.("fall");
   }
 
   /** Makes the scene show exactly these characters. Missing ones are removed. */
@@ -796,6 +848,13 @@ export class World {
     for (const actor of this.titleActors.values()) actor.update(dt);
     this.effects.update(dt);
 
+    if (this.danger) {
+      const pulse = 0.6 + 0.4 * Math.sin(now * 0.006);
+      this.danger.children.forEach((child, index) => {
+        ((child as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = (index === 0 ? 0.22 : 0.9) * pulse;
+      });
+    }
+
     this.updateCamera(dt);
     // Shake is applied for this frame only, so it never builds up in the camera's real position.
     const shake = this.scratch.shake.set(0, 0, 0);
@@ -956,8 +1015,16 @@ export class World {
     let rate: number;
 
     if (view.kind === "follow") {
+      // The camera swings after the player's facing instead of locking to it, so a fast turn does not whip the view.
+      if (!this.followActive) {
+        this.cameraYaw = view.yaw;
+        this.followActive = true;
+      }
+      const gap = Math.atan2(Math.sin(view.yaw - this.cameraYaw), Math.cos(view.yaw - this.cameraYaw));
+      this.cameraYaw += gap * (1 - Math.exp(-dt * CAMERA_TURN_RATE));
+
       // Behind and above the player, looking down at them and the way the gun points.
-      const f = facing(view.yaw);
+      const f = facing(this.cameraYaw);
       const rx = -f.z;
       const rz = f.x;
       desired.set(view.x - f.x * 7.4 + rx * 1.7, 11.5, view.z - f.z * 7.4 + rz * 1.7);
@@ -965,12 +1032,14 @@ export class World {
       // The follow camera tracks closely, which keeps turning from feeling floaty.
       rate = 16;
     } else if (view.kind === "title") {
+      this.followActive = false;
       // A slow sweep around the two duelists. The menu sits on the left, so they sit right of center.
       const sweep = Math.PI / 2 + Math.sin(performance.now() * 0.00028) * 0.55;
       desired.set(Math.cos(sweep) * 17, 5.2, Math.sin(sweep) * 17);
       look.set(this.camera.aspect > 1.3 ? -4.2 : 0, 2.6, 0);
       rate = 3;
     } else {
+      this.followActive = false;
       // Frame the people who are still alive, and zoom in as they get fewer or closer together.
       center.set(0, 0, 0);
       let alive = 0;

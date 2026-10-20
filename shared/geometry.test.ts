@@ -47,6 +47,14 @@ describe("resolveVolley", () => {
     expect(beams).toHaveLength(2);
   });
 
+  it("records who hit whom", () => {
+    const a = { id: "a", pos: { x: -5, z: 0 }, yaw: Math.PI / 2 };
+    const b = { id: "b", pos: { x: 5, z: 0 }, yaw: Math.PI / 2 };
+    const c = { id: "c", pos: { x: 5, z: -9 }, yaw: 0 };
+    const { kills } = resolveVolley([a, b, c], [a, b, c].map((s) => ({ id: s.id, pos: s.pos })));
+    expect(kills).toEqual([{ victim: "b", killers: ["a", "c"] }]);
+  });
+
   it("a player facing away from the other is not hit", () => {
     const a = { id: "a", pos: { x: -5, z: 0 }, yaw: -Math.PI / 2 };
     const b = { id: "b", pos: { x: 5, z: 0 }, yaw: Math.PI / 2 };
