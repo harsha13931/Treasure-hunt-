@@ -1,4 +1,4 @@
-import { ROOM_CODE_LENGTH, ROOM_SIZE, START_RING_RADIUS, TICK_MS } from "../../shared/config.js";
+import { ROOM_CODE_LENGTH, ROOM_SIZE, START_RING_RADIUS, TICK_MS, type BotDifficulty } from "../../shared/config.js";
 import type { Beam } from "../../shared/geometry.js";
 import { facing, stepPose, type MoveInput, type Pose } from "../../shared/movement.js";
 import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../../shared/protocol.js";
@@ -6,7 +6,8 @@ import { Audio } from "./audio.js";
 import { FloatingJoystick, HoldButton } from "./touch.js";
 import { World } from "./world.js";
 
-type ScreenName = "menu" | "lobby" | "game";
+const SCREENS = ["home", "modes", "solo", "online", "lobby", "game", "results", "howto", "settings"] as const;
+type ScreenName = (typeof SCREENS)[number];
 
 /** Simulation step in seconds. Matches the server exactly so the prediction lines up. */
 const DT = TICK_MS / 1000;
@@ -24,12 +25,26 @@ interface Me {
   yaw: number;
 }
 
+interface SoloSettings {
+  bots: number;
+  difficulty: BotDifficulty;
+}
+
+interface Settings {
+  music: boolean;
+  volume: number;
+  shake: boolean;
+}
+
 const state = {
   socket: null as WebSocket | null,
   leaving: false,
+  screen: "home" as ScreenName,
   playerId: null as string | null,
   code: "",
   hostId: null as string | null,
+  isPublic: false,
+  startsAt: null as number | null,
   phase: "LOBBY" as Phase,
   players: [] as PublicPlayer[],
   volley: 0,
@@ -38,8 +53,10 @@ const state = {
   radius: START_RING_RADIUS,
   me: null as Me | null,
   /** Our position predicted by stepping our own inputs, and the step before it (for smoothing). */
-  current: { x: 0, z: 0, yaw: 0 } as Pose,
-  previous: { x: 0, z: 0, yaw: 0 } as Pose,
+  current: { x: 0, z: 0, yaw: 0, vx: 0, vz: 0 } as Pose,
+  previous: { x: 0, z: 0, yaw: 0, vx: 0, vz: 0 } as Pose,
+  /** The facing the character is drawn with. It eases toward the real facing, so turning feels weighty. */
+  viewYaw: 0,
   /** Inputs sent to the server but not yet confirmed by it. */
   pending: [] as { seq: number; input: MoveInput }[],
   seq: 0,
@@ -47,7 +64,13 @@ const state = {
   moving: false,
   /** Positions of every living player, as shown at the last reveal. */
   revealed: [] as RevealPlayer[],
-  matchResult: "",
+  ranking: [] as string[],
+  winnerId: null as string | null,
+  /** When set, the match starts as soon as the room is created. This is how Solo vs Bots works. */
+  pendingStart: null as SoloSettings | null,
+  /** The last solo setup, so Play Again can repeat it. */
+  lastSolo: null as SoloSettings | null,
+  showResults: false,
 };
 
 const keys = new Set<string>();
@@ -55,31 +78,47 @@ let pointerLocked = false;
 let stepTimer = 0;
 let lastCountdown = 0;
 let lastFrame = performance.now();
+let difficulty: BotDifficulty = "normal";
 
+const settings = loadSettings();
 const audio = new Audio();
 
 const ui = {
   stage: byId("stage"),
-  screens: {
-    menu: byId("menu"),
-    lobby: byId("lobby"),
-    game: byId("game"),
-  } satisfies Record<ScreenName, HTMLElement>,
+  screens: Object.fromEntries(SCREENS.map((name) => [name, byId(name)])) as Record<ScreenName, HTMLElement>,
   name: byId<HTMLInputElement>("name"),
-  code: byId<HTMLInputElement>("code"),
+  play: byId<HTMLButtonElement>("play"),
+  modeSolo: byId<HTMLButtonElement>("mode-solo"),
+  soloBots: byId<HTMLInputElement>("solo-bots"),
+  soloBotCount: byId("solo-bot-count"),
+  difficulty: byId("difficulty"),
+  soloStart: byId<HTMLButtonElement>("solo-start"),
+  soloError: byId("solo-error"),
+  quick: byId<HTMLButtonElement>("quick"),
   create: byId<HTMLButtonElement>("create"),
+  code: byId<HTMLInputElement>("code"),
   join: byId<HTMLButtonElement>("join"),
   menuError: byId("menu-error"),
+  lobbyKind: byId("lobby-kind"),
   roomCode: byId<HTMLButtonElement>("room-code"),
-  lobbyResult: byId("lobby-result"),
+  lobbyHint: byId("lobby-hint"),
+  lobbyTimer: byId("lobby-timer"),
   playerCount: byId("player-count"),
   playerList: byId<HTMLUListElement>("player-list"),
-  start: byId<HTMLButtonElement>("start"),
-  bots: byId<HTMLInputElement>("bots"),
   botsRow: byId("bots-row"),
-  countdown: byId("countdown"),
+  lobbyBots: byId<HTMLInputElement>("lobby-bots"),
+  lobbyBotCount: byId("lobby-bot-count"),
+  start: byId<HTMLButtonElement>("start"),
   leave: byId<HTMLButtonElement>("leave"),
   lobbyNote: byId("lobby-note"),
+  resultTitle: byId("result-title"),
+  ranking: byId<HTMLOListElement>("ranking"),
+  again: byId<HTMLButtonElement>("again"),
+  toMenu: byId<HTMLButtonElement>("to-menu"),
+  setMusic: byId<HTMLInputElement>("set-music"),
+  setVolume: byId<HTMLInputElement>("set-volume"),
+  volumeLabel: byId("volume-label"),
+  setShake: byId<HTMLInputElement>("set-shake"),
   minimap: byId<HTMLCanvasElement>("minimap"),
   aliveCount: byId("alive-count"),
   ringRadius: byId("ring-radius"),
@@ -91,6 +130,8 @@ const ui = {
   spectating: byId("spectating"),
   touchUi: byId("touch-ui"),
   musicToggle: byId<HTMLButtonElement>("music-toggle"),
+  leaveGame: byId<HTMLButtonElement>("leave-game"),
+  countdown: byId("countdown"),
   banner: byId("banner"),
   toast: byId("toast"),
 };
@@ -108,10 +149,8 @@ document.body.classList.toggle("touch", isTouchDevice);
 // ---------- Setup ----------
 
 ui.name.value = readSavedName();
-showScreen("menu");
-
-// The title scene plays behind the menu and the lobby: two stick men face off, one fires, one falls.
-world.setTitleScene(true);
+applySettings();
+showScreen("home");
 
 // The world asks for sounds, and the page plays them.
 world.onSound = (sound) => {
@@ -120,11 +159,64 @@ world.onSound = (sound) => {
   else audio.playCollapse();
 };
 
-ui.create.addEventListener("click", () => {
-  const name = ui.name.value;
-  saveName(name);
+// Buttons that only move between screens.
+document.querySelectorAll<HTMLElement>("[data-go]").forEach((element) => {
+  element.addEventListener("click", () => showScreen(element.dataset.go as ScreenName));
+});
+
+// A soft click on every menu button. Music can only start after the first tap, so it starts here too.
+document.addEventListener("click", (event) => {
+  const target = event.target as HTMLElement;
+  if (target.closest("button") && !target.closest(".pad-btn")) audio.playClick();
+  if (settings.music && !audio.isMusicOn) audio.setMusic(true);
+});
+
+ui.play.addEventListener("click", () => {
+  saveName(ui.name.value);
+  showScreen("modes");
+});
+
+ui.modeSolo.addEventListener("click", () => showScreen("solo"));
+
+ui.soloBots.addEventListener("input", () => {
+  ui.soloBotCount.textContent = ui.soloBots.value;
+});
+
+ui.difficulty.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+  button.addEventListener("click", () => {
+    difficulty = button.dataset.difficulty as BotDifficulty;
+    ui.difficulty.querySelectorAll("button").forEach((other) => other.setAttribute("aria-pressed", String(other === button)));
+  });
+});
+
+ui.soloStart.addEventListener("click", () => {
+  ui.soloError.textContent = "";
+  const solo: SoloSettings = { bots: Number(ui.soloBots.value), difficulty };
+  state.pendingStart = solo;
+  state.lastSolo = solo;
   enterLandscape();
-  connect((socket) => send({ type: "create", name }, socket));
+  connect(
+    (socket) => send({ type: "create", name: playerName() }, socket),
+    (message) => {
+      ui.soloError.textContent = message;
+    },
+  );
+});
+
+ui.quick.addEventListener("click", () => {
+  ui.menuError.textContent = "";
+  state.pendingStart = null;
+  state.lastSolo = null;
+  enterLandscape();
+  connect((socket) => send({ type: "quick", name: playerName() }, socket));
+});
+
+ui.create.addEventListener("click", () => {
+  ui.menuError.textContent = "";
+  state.pendingStart = null;
+  state.lastSolo = null;
+  enterLandscape();
+  connect((socket) => send({ type: "create", name: playerName() }, socket));
 });
 
 ui.join.addEventListener("click", () => {
@@ -133,9 +225,11 @@ ui.join.addEventListener("click", () => {
     ui.menuError.textContent = `Room codes have ${ROOM_CODE_LENGTH} letters.`;
     return;
   }
-  saveName(ui.name.value);
+  ui.menuError.textContent = "";
+  state.pendingStart = null;
+  state.lastSolo = null;
   enterLandscape();
-  connect((socket) => send({ type: "join", code, name: ui.name.value }, socket));
+  connect((socket) => send({ type: "join", code, name: playerName() }, socket));
 });
 
 ui.code.addEventListener("keydown", (event) => {
@@ -143,33 +237,63 @@ ui.code.addEventListener("keydown", (event) => {
 });
 
 ui.name.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") ui.create.click();
+  if (event.key === "Enter") ui.play.click();
 });
 
 ui.roomCode.addEventListener("click", () => {
   void navigator.clipboard?.writeText(state.code).then(() => showToast("Room code copied.", true), () => {});
 });
 
-ui.start.addEventListener("click", () => send({ type: "start", bots: ui.bots.checked }));
-ui.bots.addEventListener("change", () => renderLobby());
+ui.lobbyBots.addEventListener("input", () => renderLobby());
 
-ui.leave.addEventListener("click", () => {
-  state.leaving = true;
-  send({ type: "leave" });
-  state.socket?.close();
-  resetToMenu();
+ui.start.addEventListener("click", () => {
+  send({ type: "start", bots: Number(ui.lobbyBots.value), difficulty });
 });
+
+ui.leave.addEventListener("click", () => leaveRoom());
+ui.leaveGame.addEventListener("click", () => {
+  if (window.confirm("Leave this match?")) leaveRoom();
+});
+
+ui.again.addEventListener("click", () => {
+  state.showResults = false;
+  if (state.lastSolo) {
+    // Solo: run the same match again straight away.
+    send({ type: "start", bots: state.lastSolo.bots, difficulty: state.lastSolo.difficulty });
+  } else {
+    showScreen("lobby");
+  }
+});
+ui.toMenu.addEventListener("click", () => leaveRoom());
 
 ui.lock.addEventListener("click", () => lockIn());
 
 ui.musicToggle.addEventListener("click", () => {
-  audio.setMusic(!audio.isMusicOn);
-  ui.musicToggle.textContent = audio.isMusicOn ? "Music on" : "Music off";
-  ui.musicToggle.setAttribute("aria-pressed", String(audio.isMusicOn));
+  settings.music = !audio.isMusicOn;
+  applySettings();
+  saveSettings();
+});
+
+ui.setMusic.addEventListener("change", () => {
+  settings.music = ui.setMusic.checked;
+  applySettings();
+  saveSettings();
+});
+ui.setVolume.addEventListener("input", () => {
+  settings.volume = Number(ui.setVolume.value) / 100;
+  applySettings();
+  saveSettings();
+});
+ui.setShake.addEventListener("change", () => {
+  settings.shake = ui.setShake.checked;
+  applySettings();
+  saveSettings();
 });
 
 // Keys are read by code, so they work the same on any keyboard layout.
 window.addEventListener("keydown", (event) => {
+  const typing = (event.target as HTMLElement).tagName === "INPUT";
+  if (typing) return;
   if (isGameKey(event.code)) event.preventDefault();
   keys.add(event.code);
   if (event.code === "Space" && !event.repeat) lockIn();
@@ -197,7 +321,7 @@ requestAnimationFrame(loop);
 
 // ---------- Networking ----------
 
-function connect(then: (socket: WebSocket) => void): void {
+function connect(then: (socket: WebSocket) => void, onFail?: (message: string) => void): void {
   if (state.socket?.readyState === WebSocket.OPEN) {
     then(state.socket);
     return;
@@ -219,11 +343,13 @@ function connect(then: (socket: WebSocket) => void): void {
   });
   socket.addEventListener("close", () => {
     if (state.leaving) return;
-    showToast("Disconnected from the server. Refresh the page to play again.");
-    resetToMenu();
+    showToast("Disconnected from the server.");
+    resetToHome();
   });
   socket.addEventListener("error", () => {
-    ui.menuError.textContent = "Could not reach the server.";
+    const message = "Could not reach the server.";
+    if (onFail) onFail(message);
+    else ui.menuError.textContent = message;
   });
 }
 
@@ -239,9 +365,10 @@ function handle(message: ServerMessage): void {
       break;
 
     case "error":
-      if (ui.screens.menu.classList.contains("hidden")) {
+      if (state.screen === "game" || state.screen === "lobby" || state.screen === "results") {
         showToast(message.message);
       } else {
+        ui.soloError.textContent = message.message;
         ui.menuError.textContent = message.message;
       }
       break;
@@ -251,6 +378,8 @@ function handle(message: ServerMessage): void {
       state.hostId = message.hostId;
       state.phase = message.phase;
       state.players = message.players;
+      state.startsAt = message.startsAt;
+      state.isPublic = message.isPublic;
       onLobby();
       break;
 
@@ -277,13 +406,7 @@ function handle(message: ServerMessage): void {
       break;
 
     case "match_over":
-      state.phase = "MATCH_OVER";
-      state.players = message.players;
-      state.matchResult = describeWinner(message.winnerId);
-      if (state.me) audio.playResult(message.winnerId === state.me.id);
-      state.me = null;
-      world.setCharacters([]);
-      world.setTitleScene(true);
+      onMatchOver(message);
       break;
   }
   renderHud();
@@ -292,17 +415,25 @@ function handle(message: ServerMessage): void {
 // ---------- Phase handlers ----------
 
 function onLobby(): void {
-  const inLobby = state.phase === "LOBBY" || state.phase === "MATCH_OVER";
-  if (inLobby) {
-    showScreen("lobby");
-    world.setTitleScene(true);
-    ui.lobbyResult.textContent = state.matchResult;
-    ui.lobbyResult.classList.toggle("hidden", !state.matchResult);
-    renderLobby();
-  } else if (ui.screens.game.classList.contains("hidden")) {
+  const between = state.phase === "LOBBY" || state.phase === "MATCH_OVER";
+  if (between) {
+    // Solo: the room exists now, so start the match.
+    if (state.pendingStart && state.phase === "LOBBY") {
+      const solo = state.pendingStart;
+      state.pendingStart = null;
+      send({ type: "start", bots: solo.bots, difficulty: solo.difficulty });
+      return;
+    }
+    if (state.showResults) {
+      showScreen("results");
+    } else {
+      showScreen("lobby");
+    }
+    return;
+  }
+  if (state.screen !== "game") {
     // Joined while a match is running. Watch until the next match starts.
     showScreen("game");
-    world.setTitleScene(false);
     world.setCharacters([]);
   }
 }
@@ -310,27 +441,33 @@ function onLobby(): void {
 function onHide(message: Extract<ServerMessage, { type: "hide" }>): void {
   showScreen("game");
   state.phase = "HIDE";
+  state.showResults = false;
   state.volley = message.volley;
   state.endsAt = message.endsAt;
   state.radius = message.radius;
   state.players = message.players;
   state.revealed = [];
-  world.setTitleScene(false);
   world.setRing(message.radius, false);
   world.clearBeams();
 
   const you = message.you;
   const me: Me = { id: state.playerId ?? "", alive: you.alive, locked: you.locked, yaw: you.yaw };
   state.me = me;
-  state.current = { x: you.x, z: you.z, yaw: you.yaw };
+  state.current = { x: you.x, z: you.z, yaw: you.yaw, vx: you.vx, vz: you.vz };
   state.previous = { ...state.current };
+  state.viewYaw = you.yaw;
   state.pending = [];
   state.moving = false;
 
   world.setCharacters(you.alive ? [{ id: me.id, x: you.x, z: you.z, yaw: you.yaw, alive: true }] : []);
+
+  if (you.alive && !readFlag("seen-tip")) {
+    showBanner(isTouchDevice ? "Walk, aim, then Lock in" : "Walk, aim, then press Space", 3200);
+    writeFlag("seen-tip");
+  }
 }
 
-/** Our own state from the server. The browser's prediction is corrected to match it. */
+/** Our own state from the server. The browser's prediction is eased toward it, never snapped. */
 function onSelf(message: Extract<ServerMessage, { type: "self" }>): void {
   const me = state.me;
   if (!me) return;
@@ -338,12 +475,24 @@ function onSelf(message: Extract<ServerMessage, { type: "self" }>): void {
 
   // Drop inputs the server has applied, then replay the rest on top of its position.
   state.pending = state.pending.filter((p) => p.seq > message.ack);
-  let pose: Pose = { x: message.x, z: message.z, yaw: me.yaw };
+  let pose: Pose = { x: message.x, z: message.z, yaw: me.yaw, vx: message.vx, vz: message.vz };
   for (const pending of state.pending) {
     pose = stepPose(pose, pending.input, DT, state.radius);
   }
-  state.current = { ...pose, yaw: me.yaw };
-  state.previous = { ...state.current };
+
+  const dx = pose.x - state.current.x;
+  const dz = pose.z - state.current.z;
+  if (Math.hypot(dx, dz) > 3) {
+    // Far off, for example after being pushed by the shrinking ring. Jump to the server's answer.
+    state.current = { ...pose, yaw: me.yaw };
+    state.previous = { ...state.current };
+  } else {
+    // Usually the two agree exactly. When they do not, close the gap a little each time instead of jerking.
+    state.current.x += dx * 0.35;
+    state.current.z += dz * 0.35;
+    state.previous.x += dx * 0.35;
+    state.previous.z += dz * 0.35;
+  }
 }
 
 function onReveal(message: Extract<ServerMessage, { type: "reveal" }>): void {
@@ -358,7 +507,7 @@ function onReveal(message: Extract<ServerMessage, { type: "reveal" }>): void {
     state.me.locked = true;
     const own = message.players.find((p) => p.id === state.me?.id);
     if (own) {
-      state.current = { x: own.x, z: own.z, yaw: own.yaw };
+      state.current = { x: own.x, z: own.z, yaw: own.yaw, vx: 0, vz: 0 };
       state.previous = { ...state.current };
     }
   }
@@ -394,8 +543,23 @@ function onFire(beams: Beam[], eliminated: string[]): void {
   if (state.me && eliminated.includes(state.me.id)) {
     state.me.alive = false;
     audio.playEliminated();
-    showToast("You were hit. You are out of the game.");
+    showToast("You were hit. You are out of the match.");
   }
+}
+
+function onMatchOver(message: Extract<ServerMessage, { type: "match_over" }>): void {
+  state.phase = "MATCH_OVER";
+  state.players = message.players;
+  state.ranking = message.ranking;
+  state.winnerId = message.winnerId;
+  const wasPlaying = state.me !== null;
+  if (wasPlaying) audio.playResult(message.winnerId === state.playerId);
+
+  state.me = null;
+  world.setCharacters([]);
+  state.showResults = wasPlaying;
+  renderResults();
+  if (wasPlaying) showScreen("results");
 }
 
 // ---------- Local simulation ----------
@@ -415,6 +579,11 @@ function loop(now: number): void {
     me.yaw = wrapAngle(me.yaw - turn * STICK_TURN_SPEED * dt);
   }
 
+  // The drawn facing eases toward the real one, so quick flicks of the mouse do not make the camera jump.
+  if (me) {
+    state.viewYaw = wrapAngle(state.viewYaw + wrapAngle(me.yaw - state.viewYaw) * (1 - Math.exp(-dt * 18)));
+  }
+
   // Footsteps while the local player walks.
   if (state.moving && canTurn()) {
     stepTimer += dt;
@@ -432,21 +601,21 @@ function loop(now: number): void {
     stepInput();
   }
 
-  if (me?.alive && state.phase === "HIDE") {
+  if (me?.alive && state.phase === "HIDE" && state.screen === "game") {
     // Draw between the last two steps so motion stays smooth at any frame rate.
     const alpha = state.accumulator / DT;
     const x = state.previous.x + (state.current.x - state.previous.x) * alpha;
     const z = state.previous.z + (state.current.z - state.previous.z) * alpha;
-    world.setPose(me.id, x, z, me.yaw);
+    world.setPose(me.id, x, z, state.viewYaw);
     world.setMoving(me.id, state.moving);
-    world.setView({ kind: "follow", x, z, yaw: me.yaw });
-    world.setFacingMarker({ x, z, yaw: me.yaw });
-  } else if (state.phase === "LOBBY" || state.phase === "MATCH_OVER") {
-    // Menu and lobby: the camera sweeps around the title duel.
+    world.setView({ kind: "follow", x, z, yaw: state.viewYaw });
+    world.setFacingMarker({ x, z, yaw: state.viewYaw });
+  } else if (state.screen !== "game") {
+    // Menus and lobby: the camera sweeps around the title duel.
     world.setView({ kind: "title" });
     world.setFacingMarker(null);
   } else {
-    // Reveal, firing, and spectating all use the overview camera, which zooms in on whoever is alive.
+    // Reveal, firing, and spectating use the overview camera, which zooms in on whoever is alive.
     world.setView({ kind: "overview" });
     world.setFacingMarker(null);
   }
@@ -477,7 +646,7 @@ function stepInput(): void {
   state.pending.push({ seq: input.seq, input });
   state.previous = { ...state.current };
   state.current = { ...stepPose(state.current, input, DT, state.radius), yaw: me.yaw };
-  state.moving = input.forward !== 0 || input.strafe !== 0;
+  state.moving = Math.hypot(state.current.vx ?? 0, state.current.vz ?? 0) > 0.5;
   send({ type: "input", ...input });
 }
 
@@ -496,11 +665,31 @@ function canTurn(): boolean {
   return state.phase === "HIDE" && state.me?.alive === true && !state.me.locked;
 }
 
-// ---------- Rendering of the HUD ----------
+// ---------- Screens and the HUD ----------
+
+function showScreen(name: ScreenName): void {
+  state.screen = name;
+  for (const key of SCREENS) {
+    ui.screens[key].classList.toggle("hidden", key !== name);
+  }
+  // Menus play over the title duel. The match itself has its own camera.
+  world.setTitleScene(name !== "game");
+  ui.leaveGame.classList.toggle("hidden", name !== "game");
+  if (name === "online") ui.menuError.textContent = "";
+  if (name === "lobby") renderLobby();
+}
 
 function renderLobby(): void {
+  const people = state.players.length;
+  const isHost = state.playerId !== null && state.playerId === state.hostId;
+
+  ui.lobbyKind.textContent = state.isPublic ? "Quick Match" : "Private room";
   ui.roomCode.textContent = state.code;
-  ui.playerCount.textContent = `(${state.players.length})`;
+  ui.roomCode.classList.toggle("hidden", state.isPublic);
+  ui.lobbyHint.textContent = state.isPublic
+    ? "A public match. It starts a few seconds after a second player joins."
+    : "Share this code. Friends join from Play Online.";
+  ui.playerCount.textContent = `(${people})`;
   ui.playerList.replaceChildren(
     ...state.players.map((player) => {
       const li = document.createElement("li");
@@ -511,21 +700,47 @@ function renderLobby(): void {
     }),
   );
 
-  const isHost = state.playerId !== null && state.playerId === state.hostId;
-  const people = state.players.length;
-  const withBots = ui.bots.checked;
-  const canStart = withBots || people >= 2;
+  // The host can add bots to any room. A match always needs at least two players in total.
+  const maxBots = Math.max(0, ROOM_SIZE - people);
+  ui.lobbyBots.max = String(maxBots);
+  if (Number(ui.lobbyBots.value) > maxBots) ui.lobbyBots.value = String(maxBots);
+  const bots = Number(ui.lobbyBots.value);
+  ui.lobbyBotCount.textContent = String(bots);
+  ui.botsRow.classList.toggle("hidden", !isHost || maxBots === 0);
+
+  const total = people + bots;
   ui.start.classList.toggle("hidden", !isHost);
-  ui.botsRow.classList.toggle("hidden", !isHost);
-  ui.start.disabled = !canStart;
+  ui.start.disabled = total < 2;
   if (!isHost) {
     ui.lobbyNote.textContent = "Waiting for the host to start.";
-  } else if (withBots) {
-    const botCount = Math.max(0, ROOM_SIZE - people);
-    ui.lobbyNote.textContent = `${people} ${people === 1 ? "player" : "players"} and ${botCount} ${botCount === 1 ? "bot" : "bots"} will play.`;
+  } else if (total < 2) {
+    ui.lobbyNote.textContent = "You need at least 2 players. Add a bot, or wait for someone to join.";
   } else {
-    ui.lobbyNote.textContent = people >= 2 ? "Everyone is in. Start when you're ready." : "Waiting for at least one more player.";
+    ui.lobbyNote.textContent = `${people} ${people === 1 ? "player" : "players"}${bots > 0 ? ` and ${bots} ${bots === 1 ? "bot" : "bots"}` : ""} will play.`;
   }
+}
+
+function renderResults(): void {
+  const mine = state.playerId;
+  const place = mine ? state.ranking.indexOf(mine) + 1 : 0;
+  if (state.winnerId === null) {
+    ui.resultTitle.textContent = "No one survived. It's a draw.";
+  } else if (state.winnerId === mine) {
+    ui.resultTitle.textContent = "You won!";
+  } else if (place > 0) {
+    ui.resultTitle.textContent = `You finished ${ordinal(place)}`;
+  } else {
+    ui.resultTitle.textContent = `${nameOf(state.winnerId)} won`;
+  }
+
+  ui.ranking.replaceChildren(
+    ...state.ranking.map((id) => {
+      const li = document.createElement("li");
+      li.append(textNode(nameOf(id)));
+      if (id === mine) li.classList.add("you");
+      return li;
+    }),
+  );
 }
 
 function renderHud(): void {
@@ -536,9 +751,16 @@ function renderHud(): void {
   const target = state.phase === "HIDE" ? state.endsAt : state.phase === "REVEAL" ? state.fireAt : 0;
   ui.timer.textContent = target ? String(Math.max(0, Math.ceil((target - Date.now()) / 1000))) : "--";
 
+  // The lobby countdown for a public match.
+  if (state.screen === "lobby") {
+    const waiting = state.startsAt !== null ? Math.max(0, Math.ceil((state.startsAt - Date.now()) / 1000)) : null;
+    ui.lobbyTimer.classList.toggle("hidden", waiting === null);
+    if (waiting !== null) ui.lobbyTimer.textContent = `Match starts in ${waiting}`;
+  }
+
   // The big countdown before the lasers fire.
   const secondsToFire = Math.max(0, Math.ceil((state.fireAt - Date.now()) / 1000));
-  const counting = state.phase === "REVEAL" && secondsToFire > 0;
+  const counting = state.phase === "REVEAL" && state.screen === "game" && secondsToFire > 0;
   ui.countdown.classList.toggle("hidden", !counting);
   if (counting) {
     ui.countdown.textContent = String(secondsToFire);
@@ -571,10 +793,11 @@ function renderHud(): void {
     }
   }
 
-  const outOfGame = state.phase !== "LOBBY" && state.phase !== "MATCH_OVER" && (!me || !me.alive);
+  const inMatch = state.screen === "game";
+  const outOfGame = inMatch && state.phase !== "LOBBY" && state.phase !== "MATCH_OVER" && (!me || !me.alive);
   ui.spectating.classList.toggle("hidden", !outOfGame);
 
-  drawMinimap();
+  if (inMatch) drawMinimap();
 }
 
 function phaseText(): string {
@@ -594,28 +817,27 @@ function phaseText(): string {
   }
 }
 
-/** Top-left map: the ring, the red zone outside it, you, and everyone once they are revealed. */
+/** Top-left map: the floor that is left, you, and everyone once they are revealed. */
 function drawMinimap(): void {
   const ctx = ui.minimap.getContext("2d");
   if (!ctx) return;
   const size = ui.minimap.width;
   const half = size / 2;
-  const view = 18; // meters shown from the center to the edge of the map
+  const view = 20; // meters shown from the center to the edge of the map
   const scale = half / view;
   const toPx = (x: number, z: number) => ({ x: half + x * scale, y: half + z * scale });
 
   ctx.clearRect(0, 0, size, size);
-  ctx.fillStyle = "rgba(120, 20, 20, 0.35)";
+  ctx.fillStyle = "rgba(10, 18, 30, 0.55)";
   ctx.fillRect(0, 0, size, size);
 
-  // Clear the inside of the ring.
   ctx.save();
   ctx.beginPath();
   ctx.arc(half, half, state.radius * scale, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(40, 38, 34, 0.9)";
+  ctx.fillStyle = "rgba(190, 220, 240, 0.28)";
   ctx.fill();
   ctx.lineWidth = 2;
-  ctx.strokeStyle = "#ff6b3d";
+  ctx.strokeStyle = "#9be4ff";
   ctx.stroke();
   ctx.restore();
 
@@ -630,21 +852,21 @@ function drawMinimap(): void {
   // Other players appear only once the positions are public.
   if (state.phase === "REVEAL" || state.phase === "FIRE" || state.phase === "RESULT") {
     for (const p of state.revealed) {
-      if (p.id !== state.me?.id) dot(p.x, p.z, "#e5e7eb", 4);
+      if (p.id !== state.me?.id) dot(p.x, p.z, "#ffffff", 4);
     }
   }
 
   const me = state.me;
   if (me?.alive) {
     const p = state.current;
-    dot(p.x, p.z, "#9fd8ff", 5);
+    dot(p.x, p.z, "#ffb36b", 5);
     const f = facing(me.yaw);
-    const tip = toPx(p.x + f.x * 2.2, p.z + f.z * 2.2);
+    const tip = toPx(p.x + f.x * 2.6, p.z + f.z * 2.6);
     const base = toPx(p.x, p.z);
     ctx.beginPath();
     ctx.moveTo(base.x, base.y);
     ctx.lineTo(tip.x, tip.y);
-    ctx.strokeStyle = "#9fd8ff";
+    ctx.strokeStyle = "#ffb36b";
     ctx.lineWidth = 2;
     ctx.stroke();
   }
@@ -652,32 +874,94 @@ function drawMinimap(): void {
 
 // ---------- Helpers ----------
 
-function showScreen(name: ScreenName): void {
-  for (const key of Object.keys(ui.screens) as ScreenName[]) {
-    ui.screens[key].classList.toggle("hidden", key !== name);
-  }
+function leaveRoom(): void {
+  state.leaving = true;
+  send({ type: "leave" });
+  state.socket?.close();
+  resetToHome();
 }
 
-function resetToMenu(): void {
-  world.setTitleScene(true);
+function resetToHome(): void {
   state.phase = "LOBBY";
   state.playerId = null;
   state.me = null;
   state.players = [];
-  state.matchResult = "";
   state.revealed = [];
+  state.ranking = [];
+  state.showResults = false;
+  state.pendingStart = null;
+  state.lastSolo = null;
+  state.startsAt = null;
   world.setCharacters([]);
-  showScreen("menu");
+  showScreen("home");
+}
+
+function playerName(): string {
+  return ui.name.value.trim() || "Player";
 }
 
 function nameOf(id: string): string {
   return state.players.find((p) => p.id === id)?.name ?? "Someone";
 }
 
-function describeWinner(winnerId: string | null): string {
-  if (winnerId === null) return "No one survived. It's a draw.";
-  if (winnerId === state.playerId) return "You are the last one standing!";
-  return `${nameOf(winnerId)} is the last one standing.`;
+function ordinal(n: number): string {
+  const suffix = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return `${n}${suffix[(v - 20) % 10] ?? suffix[v] ?? suffix[0]}`;
+}
+
+/** Pushes the saved settings into the audio, the world, and the controls on screen. */
+function applySettings(): void {
+  audio.setVolume(settings.volume);
+  world.shakeEnabled = settings.shake;
+  audio.setMusic(settings.music);
+
+  ui.setMusic.checked = settings.music;
+  ui.setVolume.value = String(Math.round(settings.volume * 100));
+  ui.volumeLabel.textContent = `${Math.round(settings.volume * 100)}%`;
+  ui.setShake.checked = settings.shake;
+  ui.musicToggle.textContent = settings.music ? "Music on" : "Music off";
+  ui.musicToggle.setAttribute("aria-pressed", String(settings.music));
+}
+
+function loadSettings(): Settings {
+  const fallback: Settings = { music: false, volume: 0.8, shake: true };
+  try {
+    const raw = localStorage.getItem("laser-ring:settings");
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<Settings>;
+    return {
+      music: parsed.music === true,
+      volume: typeof parsed.volume === "number" ? Math.min(1, Math.max(0, parsed.volume)) : fallback.volume,
+      shake: parsed.shake !== false,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function saveSettings(): void {
+  try {
+    localStorage.setItem("laser-ring:settings", JSON.stringify(settings));
+  } catch {
+    // Storage can be blocked. Settings then last only until the page closes.
+  }
+}
+
+function readFlag(name: string): boolean {
+  try {
+    return localStorage.getItem(`laser-ring:${name}`) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(name: string): void {
+  try {
+    localStorage.setItem(`laser-ring:${name}`, "1");
+  } catch {
+    // Not remembered. The tip may show again next time.
+  }
 }
 
 function isGameKey(code: string): boolean {

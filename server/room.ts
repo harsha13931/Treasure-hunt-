@@ -1,11 +1,15 @@
 import { randomBytes } from "node:crypto";
 import {
+  BOT_SKILL,
+  BotDifficulty,
   FIRE_MS,
+  FORCED_SHRINK_EVERY_VOLLEYS,
   HIDE_MS,
   MAX_PLAYERS,
   MIN_PLAYERS,
   MIN_RING_RADIUS,
   NO_KILL_VOLLEYS_BEFORE_SHRINK,
+  QUICK_START_DELAY_MS,
   REVEAL_MS,
   RESULT_MS,
   RING_SHRINK_STEP,
@@ -23,6 +27,8 @@ export type Send = (message: ServerMessage) => void;
 export interface RoomOptions {
   /** Where each player starts a match. Tests use this to set up exact duels. */
   spawn?: (index: number, count: number) => Pose;
+  /** A public room appears to Quick Match, and starts by itself once there are enough players. */
+  isPublic?: boolean;
 }
 
 interface Player {
@@ -58,7 +64,14 @@ export class Room {
   private volley = 0;
   private radius = START_RING_RADIUS;
   private noKillStreak = 0;
+  private volleysSinceShrink = 0;
   private lastKills = 0;
+  /** Who has been knocked out, in order. Used for the final ranking. */
+  private knockedOut: string[] = [];
+  private botSkill: number = BOT_SKILL.normal;
+  private lobbyTimer: ReturnType<typeof setTimeout> | null = null;
+  private startsAt: number | null = null;
+  readonly isPublic: boolean;
   private endsAt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private tickTimer: ReturnType<typeof setInterval> | null = null;
@@ -69,6 +82,12 @@ export class Room {
   constructor(code: string, options: RoomOptions = {}) {
     this.code = code;
     this.spawn = options.spawn ?? startPoseFor;
+    this.isPublic = options.isPublic ?? false;
+  }
+
+  /** True while the room is between matches and has a free spot, so a new player can join. */
+  get isOpen(): boolean {
+    return (this.phase === "LOBBY" || this.phase === "MATCH_OVER") && this.players.size < MAX_PLAYERS;
   }
 
   /** A room is empty when no people are left in it. Bots do not keep a room alive. */
@@ -91,6 +110,7 @@ export class Room {
     const id = randomBytes(8).toString("hex");
     this.players.set(id, this.newPlayer(id, sanitizeName(name), send, false));
     this.hostId ??= id;
+    this.updateAutoStart();
 
     send({ type: "joined", code: this.code, playerId: id });
     this.broadcastLobby();
@@ -109,17 +129,20 @@ export class Room {
     if (this.phase === "HIDE" && player.alive) {
       // A departing player may have been the one holding up the round.
       player.alive = false;
+      this.knockedOut.push(id);
       if (this.livingPlayers().length < 2) {
         this.endMatch();
       } else {
         this.revealIfEveryoneLocked();
       }
     }
+    this.updateAutoStart();
     this.broadcastLobby();
   }
 
   destroy(): void {
     this.clearTimers();
+    this.cancelAutoStart();
     this.players.clear();
   }
 
@@ -156,11 +179,14 @@ export class Room {
       case "start": {
         if (player.id !== this.hostId) throw new Error("Only the host can start the match.");
         if (this.phase !== "LOBBY" && this.phase !== "MATCH_OVER") throw new Error("A match is already running.");
-        const withBots = message.bots === true;
-        if (!withBots && this.people().length < MIN_PLAYERS) {
-          throw new Error(`You need at least ${MIN_PLAYERS} players, or turn on bots.`);
+        const people = this.people().length;
+        const bots = Math.max(0, Math.min(ROOM_SIZE - people, Math.floor(Number(message.bots) || 0)));
+        if (people + bots < MIN_PLAYERS) {
+          throw new Error(`You need at least ${MIN_PLAYERS} players. Add a bot or wait for a friend.`);
         }
-        this.startMatch(withBots);
+        const difficulty: BotDifficulty =
+          message.difficulty && message.difficulty in BOT_SKILL ? message.difficulty : "normal";
+        this.startMatch(bots, difficulty);
         return;
       }
 
@@ -181,25 +207,22 @@ export class Room {
       bot,
       alive: false,
       locked: false,
-      pose: { x: 0, z: 0, yaw: 0 },
+      pose: { x: 0, z: 0, yaw: 0, vx: 0, vz: 0 },
       queue: [],
       ack: 0,
       plan: null,
     };
   }
 
-  private startMatch(withBots: boolean): void {
+  private startMatch(botCount: number, difficulty: BotDifficulty): void {
     this.clearTimers();
+    this.cancelAutoStart();
     this.removeBots();
+    this.botSkill = BOT_SKILL[difficulty];
 
-    if (withBots) {
-      // Fill every empty spot, so a full room always plays.
-      let index = 0;
-      while (this.players.size < ROOM_SIZE) {
-        const id = randomBytes(8).toString("hex");
-        this.players.set(id, this.newPlayer(id, `Bot ${BOT_NAMES[index % BOT_NAMES.length]}`, noop, true));
-        index += 1;
-      }
+    for (let index = 0; index < botCount; index++) {
+      const id = randomBytes(8).toString("hex");
+      this.players.set(id, this.newPlayer(id, `Bot ${BOT_NAMES[index % BOT_NAMES.length]}`, noop, true));
     }
 
     const all = [...this.players.values()];
@@ -213,6 +236,8 @@ export class Room {
     });
     this.radius = START_RING_RADIUS;
     this.noKillStreak = 0;
+    this.volleysSinceShrink = 0;
+    this.knockedOut = [];
     this.volley = 0;
     this.lastRevealed.clear();
     this.enterHide();
@@ -234,7 +259,7 @@ export class Room {
     for (const player of this.livingPlayers()) {
       player.locked = false;
       player.queue = [];
-      player.plan = player.bot ? planBot(this.radius, known, quick, Date.now()) : null;
+      player.plan = player.bot ? planBot(this.radius, known, quick, Date.now(), this.botSkill) : null;
     }
 
     this.sendHideToAll();
@@ -275,7 +300,8 @@ export class Room {
       player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.radius);
       player.ack = input.seq;
     }
-    player.pose = { ...player.pose, yaw };
+    // Locking in means standing still, so the player stops dead.
+    player.pose = { ...player.pose, yaw, vx: 0, vz: 0 };
     player.locked = true;
   }
 
@@ -331,6 +357,7 @@ export class Room {
       const player = this.players.get(id);
       if (player) player.alive = false;
       this.lastRevealed.delete(id);
+      this.knockedOut.push(id);
     }
     this.lastKills = eliminated.length;
 
@@ -345,8 +372,11 @@ export class Room {
       return;
     }
 
+    // The ring closes in when nobody is getting hit, and also every few volleys regardless,
+    // so a match always keeps moving toward an ending.
     this.noKillStreak = this.lastKills === 0 ? this.noKillStreak + 1 : 0;
-    if (this.noKillStreak >= NO_KILL_VOLLEYS_BEFORE_SHRINK) {
+    this.volleysSinceShrink += 1;
+    if (this.noKillStreak >= NO_KILL_VOLLEYS_BEFORE_SHRINK || this.volleysSinceShrink >= FORCED_SHRINK_EVERY_VOLLEYS) {
       this.shrinkRing();
     }
     this.schedule(RESULT_MS, () => this.enterHide());
@@ -356,6 +386,7 @@ export class Room {
   private shrinkRing(): void {
     this.radius = Math.max(MIN_RING_RADIUS, this.radius - RING_SHRINK_STEP);
     this.noKillStreak = 0;
+    this.volleysSinceShrink = 0;
     for (const player of this.livingPlayers()) {
       player.pose = clampToRing(player.pose, this.radius);
     }
@@ -367,10 +398,44 @@ export class Room {
     this.phase = "MATCH_OVER";
     const survivors = this.livingPlayers();
     const winnerId = survivors.length === 1 ? survivors[0].id : null;
+    // First place is the survivor, then the last to be knocked out, back to the first.
+    const ranking = [...survivors.map((player) => player.id), ...[...this.knockedOut].reverse()].filter(
+      (id, index, all) => this.players.has(id) && all.indexOf(id) === index,
+    );
     // Tell everyone who won while the bots are still in the list, then send the bots home.
-    this.broadcast({ type: "match_over", winnerId, players: this.publicPlayers() });
+    this.broadcast({ type: "match_over", winnerId, players: this.publicPlayers(), ranking });
     this.removeBots();
+    this.updateAutoStart();
     this.broadcastLobby();
+  }
+
+  /**
+   * A public room starts by itself a few seconds after a second person arrives,
+   * and stops waiting if people leave and there are too few again.
+   */
+  private updateAutoStart(): void {
+    const between = this.phase === "LOBBY" || this.phase === "MATCH_OVER";
+    const enough = this.people().length >= MIN_PLAYERS;
+    if (this.isPublic && between && enough) {
+      if (this.lobbyTimer === null) {
+        this.startsAt = Date.now() + QUICK_START_DELAY_MS;
+        this.lobbyTimer = setTimeout(() => {
+          this.lobbyTimer = null;
+          this.startsAt = null;
+          if ((this.phase === "LOBBY" || this.phase === "MATCH_OVER") && this.people().length >= MIN_PLAYERS) {
+            this.startMatch(0, "normal");
+          }
+        }, QUICK_START_DELAY_MS);
+      }
+    } else {
+      this.cancelAutoStart();
+    }
+  }
+
+  private cancelAutoStart(): void {
+    if (this.lobbyTimer) clearTimeout(this.lobbyTimer);
+    this.lobbyTimer = null;
+    this.startsAt = null;
   }
 
   // ----- helpers -----
@@ -420,6 +485,8 @@ export class Room {
       phase: this.phase,
       hostId: this.hostId,
       players: this.publicPlayers(),
+      startsAt: this.startsAt,
+      isPublic: this.isPublic,
     });
   }
 
@@ -441,6 +508,8 @@ export class Room {
           x: player.pose.x,
           z: player.pose.z,
           yaw: player.pose.yaw,
+          vx: player.pose.vx ?? 0,
+          vz: player.pose.vz ?? 0,
           locked: player.locked,
         },
         players,
@@ -455,6 +524,8 @@ export class Room {
       x: player.pose.x,
       z: player.pose.z,
       yaw: player.pose.yaw,
+      vx: player.pose.vx ?? 0,
+      vz: player.pose.vz ?? 0,
       ack: player.ack,
       locked: player.locked,
     });

@@ -5,7 +5,8 @@ import { MUZZLE_FORWARD, PLAYER_HEIGHT, BEAM_HEIGHT } from "../../shared/config.
 const K = PLAYER_HEIGHT / 1.8;
 const GUN_TIP = 0.238; // grip to muzzle, in model units
 const LIMB = 0.05;
-const PALETTE = ["#d6dae0", "#7dd3fc", "#fca5a5", "#86efac", "#fcd34d", "#c4b5fd", "#f9a8d4", "#fdba74", "#5eead4", "#d9f99d"];
+// Strong colors, so every player stands out against white snow.
+const PALETTE = ["#e5484d", "#2f7de1", "#f5a524", "#1fa971", "#8b5cf6", "#e255a1", "#0fb5b5", "#f26b21", "#c6b800", "#4f6bed"];
 
 /** A stable color for each player id, so a player keeps their color for the whole match. */
 export function colorFor(id: string): string {
@@ -45,7 +46,7 @@ export class Stickman {
   constructor(id: string, name?: string) {
     const color = colorFor(id);
     const limb = this.track(new THREE.MeshStandardMaterial({ color, roughness: 0.42, metalness: 0.05 }));
-    const head = this.track(new THREE.MeshStandardMaterial({ color: "#f4f1ea", roughness: 0.35, metalness: 0 }));
+    const head = this.track(new THREE.MeshStandardMaterial({ color: "#f0d5bf", roughness: 0.45, metalness: 0 }));
 
     this.body.scale.setScalar(K);
     this.tilt.add(this.body);

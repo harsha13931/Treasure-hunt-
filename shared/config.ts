@@ -15,6 +15,10 @@ export const RING_SHRINK_STEP = 2.5;
 export const MIN_RING_RADIUS = 5.5;
 /** After this many volleys in a row with no kill, the ring shrinks one step. */
 export const NO_KILL_VOLLEYS_BEFORE_SHRINK = 2;
+/** The ring also shrinks after this many volleys even if there were kills, so a match always moves on. */
+export const FORCED_SHRINK_EVERY_VOLLEYS = 3;
+/** In a public match, how long the lobby waits after the second player joins before it starts. */
+export const QUICK_START_DELAY_MS = 15_000;
 
 // Players and the laser pistol.
 export const PLAYER_RADIUS = 1;
@@ -27,16 +31,19 @@ export const MUZZLE_FORWARD = 1.92;
 export const BEAM_HALF_WIDTH = 0.09;
 export const BEAM_RANGE = 80;
 
+/** Bot skill from 0 (easy) to 1 (hard). */
+export const BOT_SKILL = { easy: 0.15, normal: 0.5, hard: 0.9 } as const;
+export type BotDifficulty = keyof typeof BOT_SKILL;
+
 // Phase timings.
 export const HIDE_MS = 30_000;
 export const REVEAL_MS = 3_000;
 export const FIRE_MS = 1_200;
 export const RESULT_MS = 2_500;
 
-// The pit the match is played in. The cage (the ring) shrinks inside it.
-export const PIT_RADIUS = 44;
-export const PIT_WALL_HEIGHT = 32;
-/** How far down the bottom of the pit is. Floor levels that break away fall this far. */
+// The snow world. The arena is a circle of ice cut into the snowfield, over a deep crevasse.
+export const WORLD_RADIUS = 380;
+/** How far down the bottom of the crevasse is. Floor levels that break away fall this far. */
 export const PIT_DEPTH = 50;
 
 /**

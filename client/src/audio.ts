@@ -11,9 +11,36 @@ export class Audio {
   private musicNodes: AudioNode[] = [];
   private musicBus: GainNode | null = null;
   private musicOn = false;
+  private volume = 0.8;
 
   get isMusicOn(): boolean {
     return this.musicOn;
+  }
+
+  /** Sets the master volume for every sound, from 0 to 1. */
+  setVolume(volume: number): void {
+    this.volume = Math.min(1, Math.max(0, volume));
+    if (this.master && this.context) {
+      this.master.gain.setTargetAtTime(this.volume, this.context.currentTime, 0.05);
+    }
+  }
+
+  /** A short soft tick for buttons. */
+  playClick(): void {
+    const ctx = this.ensure();
+    if (!ctx || !this.master) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(780, now);
+    osc.frequency.exponentialRampToValueAtTime(520, now + 0.06);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.1, now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+    osc.connect(gain).connect(this.master);
+    osc.start(now);
+    osc.stop(now + 0.1);
   }
 
   /** Turns the background music on or off. Call from a click handler so the browser allows it. */
@@ -219,7 +246,7 @@ export class Audio {
       if (!this.context) {
         this.context = new AudioContext();
         this.master = this.context.createGain();
-        this.master.gain.value = 0.7;
+        this.master.gain.value = this.volume;
         this.master.connect(this.context.destination);
         this.shotBuffer = this.makeNoise(this.context, 0.3);
         this.longNoise = this.makeNoise(this.context, 2.4);

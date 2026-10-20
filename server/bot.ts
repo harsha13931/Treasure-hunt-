@@ -20,6 +20,8 @@ export function planBot(
   publicPositions: Vec2[],
   quick: boolean,
   now: number,
+  /** From 0 (easy) to 1 (hard). Better bots aim more carefully at where people were last seen. */
+  skill: number,
   random: () => number = Math.random,
 ): BotPlan {
   // A random spot inside the ring, spread evenly over the area.
@@ -28,10 +30,13 @@ export function planBot(
   const target = { x: Math.cos(angle) * distance, z: Math.sin(angle) * distance };
 
   let aimYaw: number;
-  if (publicPositions.length > 0) {
+  // Easy bots often ignore what they saw. Hard bots nearly always use it, and aim more tightly.
+  const usesInfo = publicPositions.length > 0 && random() < 0.4 + 0.6 * skill;
+  if (usesInfo) {
     // Guess that someone is still near where they were last seen.
     const guess = publicPositions[Math.floor(random() * publicPositions.length)];
-    aimYaw = Math.atan2(guess.x - target.x, guess.z - target.z) + (random() - 0.5) * 0.5;
+    const noise = 0.9 - 0.8 * skill;
+    aimYaw = Math.atan2(guess.x - target.x, guess.z - target.z) + (random() - 0.5) * noise;
   } else {
     // No one has been seen yet. Face the middle of the ring, where players tend to gather.
     aimYaw = Math.atan2(-target.x, -target.z) + (random() - 0.5) * 1.2;

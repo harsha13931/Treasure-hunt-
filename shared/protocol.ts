@@ -1,13 +1,21 @@
 import type { Beam } from "./geometry.js";
+import type { BotDifficulty } from "./config.js";
 import type { MoveInput } from "./movement.js";
 
 // Messages the browser sends to the server.
 export type ClientMessage =
   | { type: "create"; name: string }
+  /** Join a public match that is waiting for players, or open a new one. */
+  | { type: "quick"; name: string }
   | { type: "join"; code: string; name: string }
   | ({ type: "input" } & MoveInput)
   | { type: "lock"; yaw: number }
-  | { type: "start"; /** Fill empty spots with bots, up to a full room. */ bots?: boolean }
+  | {
+      type: "start";
+      /** How many bots to add. A match needs at least 2 players in total, bots included. */
+      bots?: number;
+      difficulty?: BotDifficulty;
+    }
   | { type: "leave" };
 
 export type Phase = "LOBBY" | "HIDE" | "REVEAL" | "FIRE" | "RESULT" | "MATCH_OVER";
@@ -31,14 +39,23 @@ export interface RevealPlayer {
 export type ServerMessage =
   | { type: "joined"; code: string; playerId: string }
   | { type: "error"; message: string }
-  | { type: "lobby"; code: string; phase: Phase; hostId: string | null; players: PublicPlayer[] }
+  | {
+      type: "lobby";
+      code: string;
+      phase: Phase;
+      hostId: string | null;
+      players: PublicPlayer[];
+      /** A public match starts by itself at this time (milliseconds), once there are enough players. */
+      startsAt: number | null;
+      isPublic: boolean;
+    }
   | {
       // Sent to each player when a hide phase starts. Other players' positions are never included.
       type: "hide";
       volley: number;
       endsAt: number;
       radius: number;
-      you: { alive: boolean; x: number; z: number; yaw: number; locked: boolean };
+      you: { alive: boolean; x: number; z: number; yaw: number; vx: number; vz: number; locked: boolean };
       players: PublicPlayer[];
     }
   | {
@@ -47,6 +64,8 @@ export type ServerMessage =
       x: number;
       z: number;
       yaw: number;
+      vx: number;
+      vz: number;
       ack: number;
       locked: boolean;
     }
@@ -60,7 +79,13 @@ export type ServerMessage =
     }
   | { type: "fire"; beams: Beam[]; eliminated: string[] }
   | { type: "ring"; radius: number }
-  | { type: "match_over"; winnerId: string | null; players: PublicPlayer[] };
+  | {
+      type: "match_over";
+      winnerId: string | null;
+      players: PublicPlayer[];
+      /** Everyone, from first place to last. */
+      ranking: string[];
+    };
 
 export function encode(message: ServerMessage): string {
   return JSON.stringify(message);

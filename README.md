@@ -1,26 +1,34 @@
 # Laser Ring
 
-A multiplayer last-one-standing game. You are a stick man in a deep pit, inside a steel cage, holding a laser pistol. Everyone walks to a spot and turns to face a direction in secret. When the lights come on, all the lasers fire at once. If a beam touches you, you are out for good. The last player standing wins.
+A multiplayer last-one-standing game. You are a stick man on a circle of ice in a snowy world, inside a steel cage, holding a laser pistol. Everyone walks to a spot and turns to face a direction in secret. When the reveal comes, all the lasers fire at once. If a beam touches you, you are out for good. The last player standing wins.
 
-- **Hidden positions:** during the hide phase the server sends each player only their own position. Nobody else is drawn on your screen, and their positions are never sent to your browser until the reveal.
-- **The server decides:** the server runs the timers, the movement, every hit, and the cage. The browser only draws what it is told.
-- **One gun:** a laser pistol. The beam is a straight line that stops at the first player it touches.
-- **The floor breaks away:** the arena floor is built as concentric levels. If two volleys in a row end with nobody hit, the outermost level cracks apart and falls into the pit, and the cage closes in to the next level. Anyone left outside the new edge is pushed back in.
-- **Eight players, with bots:** a full room is eight. The host can fill empty spots with bots, so one person can play alone, or two or more can play together. Bots only use positions that were made public at a reveal, and they are removed when the match ends.
-- **Out means out:** there are no points. A player who is hit watches the rest of the match.
-- **Works on phones (landscape only):** floating joysticks that appear under your thumb, plus buttons for walking forward and back (left side) and turning left and right (right side).
-- **Everything is free:** the stick men, the pistol, the pit, the textures, and every sound are drawn or generated in code. There are no model, image, or audio files to license.
-- **A real game feel:** a title screen where two stick men face off and one shoots the other, muzzle flashes, soft glowing lasers, a red burst when someone is hit, falling and recoil animations, camera shake, a 3-2-1 countdown, footsteps, and sound effects for shots, hits, and the floor breaking away.
-- **No laser until it fires:** there is no crosshair and no aiming line. A faint arrow on the floor in front of you shows which way you face. Beams appear only when the lasers fire.
+## Ways to play
+
+From the main menu choose **Play**, then:
+
+- **Solo vs Bots:** play right away against computer players. You choose how many bots (1 to 7) and how hard they are (Easy, Normal, Hard).
+- **Play Online, Quick Match:** join a public match with real people. The match starts by itself a few seconds after a second player joins. The host of the room can also add bots.
+- **Play Online, Private room:** make a room, share its five-letter code, and friends join with it. The host picks how many bots to add, if any.
+
+A match needs **at least 2 players in total**, bots included, and holds up to 8. Nothing forces a full room. Bots only use positions that were made public at a reveal, so they cannot see you while you hide.
 
 ## How a match plays
 
-1. The host starts the match. With bots on (the default), the room is filled to eight. With bots off, at least two people are needed.
-2. **Hide phase (30 seconds):** walk anywhere inside the cage and turn to aim. Press Lock in (or Space) to stand still. When everyone has locked in, or the timer ends, the reveal starts.
-3. **Reveal (3 seconds):** every player's position and aim become visible.
-4. **Fire:** every laser fires at the same moment. Anyone a beam touches is out.
-5. If nobody was hit twice in a row, the outer floor level breaks away and the cage closes in. Then the next hide phase begins with the survivors.
-6. The last player alive wins.
+1. **Hide phase (30 seconds):** walk anywhere inside the cage and turn to aim. Press Lock in (or Space) to stand still. When everyone has locked in, or the timer ends, the reveal starts.
+2. **Reveal (3 seconds):** every player's position and aim become visible, with a 3-2-1 countdown.
+3. **Fire:** every laser fires at the same moment. A beam stops at the first player it touches, and anyone it touches is **out for the whole match**. There are no points.
+4. **The floor breaks away:** the arena floor is built as concentric ice levels. The outermost level cracks apart and falls into the crevasse, and the cage closes in, when either two volleys in a row end with nobody hit, or three volleys have passed since the last time, whichever comes first. So a match always keeps moving toward an ending.
+5. The next hide phase begins with the survivors. The last player alive wins, and a results screen shows the final ranking, with Play Again and Main menu.
+
+## Features
+
+- **Snow world:** an open snowfield with mountains and pine trees, snow falling from above, and the arena as a circle of ice over a deep crevasse.
+- **Smooth movement:** you speed up and slow down like a person, and your own movement is predicted in the browser so it never waits on the network.
+- **A real-game feel:** a title screen where two stick men face off and one shoots the other, muzzle flashes, thin glowing lasers, a red burst when someone is hit, falling and recoil animations, camera shake, footsteps, and sound effects for shots, hits, and the floor breaking away.
+- **Works on phones (landscape only):** floating joysticks that appear under your thumb, plus buttons for walking forward and back (left side) and turning left and right (right side).
+- **Settings:** music, sound volume, and camera shake, saved in the browser.
+- **Everything is free:** the stick men, the pistol, the world, the textures, and every sound are drawn or generated in code. There are no model, image, or audio files to license.
+- **No laser until it fires:** there is no crosshair and no aiming line. A faint arrow on the floor in front of you shows which way you face.
 
 ## Controls
 
@@ -49,7 +57,7 @@ Open <http://localhost:5173>. Open a second browser window and join with the roo
 npm test
 ```
 
-They cover the beam geometry, the movement rules, the round flow, the cage shrinking, last-one-standing, and the check that no other player's position reaches a browser during the hide phase.
+They cover the beam geometry, the movement rules, the round flow, the floor breaking away (both rules), last-one-standing and rankings, bots and the two-player minimum, public matches starting by themselves, and the check that no other player's position reaches a browser during the hide phase.
 
 ## Build and run in production
 
@@ -78,7 +86,7 @@ Things to know:
 ## Project layout
 
 ```
-client/        Browser app: Three.js pit and cage, stick men, touch controls, audio, menus (Vite + TypeScript)
+client/        Browser app: Three.js snow world, stick men, touch controls, audio, menus (Vite + TypeScript)
 server/        Node server: static files, WebSocket rooms, round state machine
 shared/        Rules, movement, beam geometry, floor levels, and message types used by both sides
 Dockerfile     Production container
@@ -87,7 +95,7 @@ render.yaml    Render Blueprint (one-click setup)
 
 ## Tuning
 
-Everything about the rules lives in `shared/config.ts`: the cage size and the number of floor levels, how many quiet volleys make a level fall, walking speed, player size, room size, and all the phase timings. Bot behavior is in `server/bot.ts`.
+Everything about the rules lives in `shared/config.ts`: the cage size and the number of floor levels, how many quiet volleys (and how many volleys in total) make a level fall, walking speed, player size, room size, how long a public match waits to start, and all the phase timings. Bot behavior is in `server/bot.ts`.
 
 ## Not yet built
 

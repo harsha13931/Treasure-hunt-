@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <meta name="description" content="Laser Ring: last one standing in a shrinking ring." />
-    <meta name="theme-color" content="#15130f" />
+    <meta name="description" content="Laser Ring: a hide-and-aim laser duel. Last one standing wins." />
+    <meta name="theme-color" content="#b9cfe6" />
     <title>Laser Ring</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/src/style.css" />
@@ -13,44 +13,102 @@
     <div id="stage"></div>
 
     <main id="app">
-      <!-- Menu: name, then create or join a room -->
-      <section id="menu" class="panel screen">
+      <!-- Main menu -->
+      <section id="home" class="panel screen">
         <h1 class="title">Laser Ring</h1>
-        <p class="tagline">Walk the ring. Hold still. Fire on the reveal. Last one standing wins.</p>
+        <p class="tagline">Hide your spot. Aim in secret. Last one standing wins.</p>
 
         <label class="field">
           <span>Your name</span>
           <input id="name" maxlength="16" autocomplete="nickname" placeholder="Player" />
         </label>
 
-        <div class="row">
-          <button id="create" class="btn primary">Create room</button>
+        <div class="stack">
+          <button id="play" class="btn primary big">Play</button>
+          <button class="btn" data-go="howto">How to play</button>
+          <button class="btn" data-go="settings">Settings</button>
+        </div>
+      </section>
+
+      <!-- Choose how to play -->
+      <section id="modes" class="panel screen hidden">
+        <h2 class="screen-title">Choose how to play</h2>
+        <div class="stack">
+          <button id="mode-solo" class="mode-card">
+            <strong>Solo vs Bots</strong>
+            <span>Jump straight in against computer players. You choose how many.</span>
+          </button>
+          <button class="mode-card" data-go="online">
+            <strong>Play Online</strong>
+            <span>Play with real people. Quick Match, or invite friends with a code.</span>
+          </button>
+        </div>
+        <button class="btn ghost back" data-go="home">Back</button>
+      </section>
+
+      <!-- Solo setup -->
+      <section id="solo" class="panel screen hidden">
+        <h2 class="screen-title">Solo vs Bots</h2>
+
+        <label class="field">
+          <span>Bots <strong id="solo-bot-count">5</strong></span>
+          <input id="solo-bots" type="range" min="1" max="7" value="5" />
+        </label>
+
+        <div class="field">
+          <span>Difficulty</span>
+          <div id="difficulty" class="segmented" role="group" aria-label="Bot difficulty">
+            <button type="button" data-difficulty="easy">Easy</button>
+            <button type="button" data-difficulty="normal" aria-pressed="true">Normal</button>
+            <button type="button" data-difficulty="hard">Hard</button>
+          </div>
         </div>
 
-        <div class="divider"><span>or join a room</span></div>
+        <div class="row">
+          <button id="solo-start" class="btn primary">Start match</button>
+          <button class="btn ghost" data-go="modes">Back</button>
+        </div>
+        <p id="solo-error" class="error" role="alert"></p>
+      </section>
+
+      <!-- Online options -->
+      <section id="online" class="panel screen hidden">
+        <h2 class="screen-title">Play Online</h2>
+        <div class="stack">
+          <button id="quick" class="mode-card">
+            <strong>Quick Match</strong>
+            <span>Join a public match. It starts a few seconds after a second player arrives.</span>
+          </button>
+          <button id="create" class="mode-card">
+            <strong>Private room</strong>
+            <span>Make a room and share its code with friends.</span>
+          </button>
+        </div>
+
+        <div class="divider"><span>or join with a code</span></div>
 
         <div class="row">
           <input id="code" maxlength="5" placeholder="ROOM CODE" autocomplete="off" class="code-input" />
           <button id="join" class="btn">Join</button>
         </div>
-
         <p id="menu-error" class="error" role="alert"></p>
+        <button class="btn ghost back" data-go="modes">Back</button>
       </section>
 
-      <!-- Lobby: room code, players, host starts -->
+      <!-- Lobby -->
       <section id="lobby" class="panel screen hidden">
-        <p class="eyebrow">Room code</p>
+        <p id="lobby-kind" class="eyebrow">Private room</p>
         <button id="room-code" class="room-code" title="Copy room code"></button>
-        <p class="hint">Share this code. Friends join from the menu.</p>
+        <p id="lobby-hint" class="hint"></p>
 
-        <p id="lobby-result" class="result hidden"></p>
+        <p id="lobby-timer" class="result hidden"></p>
 
         <h2 class="section-title">Players <span id="player-count"></span></h2>
         <ul id="player-list" class="player-list"></ul>
 
-        <label id="bots-row" class="check hidden">
-          <input id="bots" type="checkbox" checked />
-          <span>Fill empty spots with bots (up to 8 players)</span>
+        <label id="bots-row" class="field hidden">
+          <span>Add bots <strong id="lobby-bot-count">0</strong></span>
+          <input id="lobby-bots" type="range" min="0" max="7" value="0" />
         </label>
 
         <div class="row">
@@ -58,6 +116,55 @@
           <button id="leave" class="btn ghost">Leave</button>
         </div>
         <p id="lobby-note" class="hint"></p>
+      </section>
+
+      <!-- Results -->
+      <section id="results" class="panel screen hidden">
+        <p class="eyebrow">Match over</p>
+        <h2 id="result-title" class="result-title"></h2>
+        <ol id="ranking" class="ranking"></ol>
+        <div class="row">
+          <button id="again" class="btn primary">Play again</button>
+          <button id="to-menu" class="btn ghost">Main menu</button>
+        </div>
+      </section>
+
+      <!-- How to play -->
+      <section id="howto" class="panel screen hidden">
+        <h2 class="screen-title">How to play</h2>
+        <ol class="steps">
+          <li><strong>Hide.</strong> Walk anywhere inside the cage and turn to aim. Nobody can see where you are.</li>
+          <li><strong>Lock in.</strong> Stand still when you are happy with your spot and aim.</li>
+          <li><strong>Reveal.</strong> Everyone appears at once, and a short countdown begins.</li>
+          <li><strong>Fire.</strong> All the lasers fire together. Anyone a beam touches is out.</li>
+          <li><strong>The floor breaks.</strong> Every few rounds the outer ice cracks and falls, and the cage closes in.</li>
+          <li><strong>Win.</strong> The last one standing wins.</li>
+        </ol>
+        <table class="keys">
+          <tr><th></th><th>Computer</th><th>Phone</th></tr>
+          <tr><td>Walk</td><td>W A S D</td><td>Left stick or ▲ ▼</td></tr>
+          <tr><td>Turn and aim</td><td>Mouse, or Q E</td><td>Right stick or ◀ ▶</td></tr>
+          <tr><td>Lock in</td><td>Space</td><td>Lock in button</td></tr>
+        </table>
+        <button class="btn ghost back" data-go="home">Back</button>
+      </section>
+
+      <!-- Settings -->
+      <section id="settings" class="panel screen hidden">
+        <h2 class="screen-title">Settings</h2>
+        <label class="check">
+          <input id="set-music" type="checkbox" />
+          <span>Music</span>
+        </label>
+        <label class="field">
+          <span>Sound volume <strong id="volume-label">80%</strong></span>
+          <input id="set-volume" type="range" min="0" max="100" value="80" />
+        </label>
+        <label class="check">
+          <input id="set-shake" type="checkbox" checked />
+          <span>Camera shake</span>
+        </label>
+        <button class="btn ghost back" data-go="home">Back</button>
       </section>
 
       <!-- In-match HUD -->
@@ -94,11 +201,12 @@
           </div>
         </div>
 
-        <p id="spectating" class="spectating hidden">You are out. Watching the last fight.</p>
+        <p id="spectating" class="spectating hidden">You are out. Watching the rest of the match.</p>
       </section>
 
       <div id="rotate" class="rotate"><p>Turn your phone sideways to play</p></div>
       <button id="music-toggle" class="chip-button" aria-pressed="false">Music off</button>
+      <button id="leave-game" class="chip-button leave-chip hidden">Leave match</button>
       <div id="countdown" class="countdown hidden" aria-live="assertive"></div>
       <div id="banner" class="banner" role="status" aria-live="polite"></div>
       <div id="toast" class="toast hidden" role="alert"></div>

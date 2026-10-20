@@ -37,6 +37,13 @@ function newRoomCode(): string {
   return code;
 }
 
+function openRoom(isPublic: boolean): Room {
+  const code = newRoomCode();
+  const room = new Room(code, { isPublic });
+  rooms.set(code, room);
+  return room;
+}
+
 const http = createServer((req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
 
@@ -108,11 +115,15 @@ wss.on("connection", (socket: WebSocket) => {
 
     if (!room) {
       if (msg.type === "create") {
-        const code = newRoomCode();
-        const created = new Room(code);
-        rooms.set(code, created);
+        const created = openRoom(false);
         room = created;
         playerId = created.join(readName(msg.name), send);
+      } else if (msg.type === "quick") {
+        // Quick Match: join a public room that is waiting for players, or open a new one.
+        const waiting = [...rooms.values()].find((candidate) => candidate.isPublic && candidate.isOpen);
+        const target = waiting ?? openRoom(true);
+        room = target;
+        playerId = target.join(readName(msg.name), send);
       } else if (msg.type === "join") {
         const code = typeof msg.code === "string" ? msg.code.trim().toUpperCase() : "";
         const found = rooms.get(code);

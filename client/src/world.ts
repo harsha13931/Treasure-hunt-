@@ -8,11 +8,10 @@ import {
   BEAM_HEIGHT,
   MUZZLE_FORWARD,
   PIT_DEPTH,
-  PIT_RADIUS,
-  PIT_WALL_HEIGHT,
   PLAYER_RADIUS,
   ringLevels,
   START_RING_RADIUS,
+  WORLD_RADIUS,
 } from "../../shared/config.js";
 import type { Beam } from "../../shared/geometry.js";
 import { facing } from "../../shared/movement.js";
@@ -62,6 +61,8 @@ const CAGE_HEIGHT = 9;
 const CAGE_CLOSE_SPEED = 3.2; // meters per second that the cage closes in
 const CAGE_CLOSE_DELAY = 0.7; // seconds the cage waits while the floor breaks away
 const SLAB_THICKNESS = 0.9;
+const SNOW_RADIUS = 95;
+const SNOW_HEIGHT = 75;
 const BEAM_GROW_MS = 140;
 const BEAM_HOLD_MS = 700;
 const BEAM_FADE_MS = 500;
@@ -102,6 +103,12 @@ export class World {
   private titleActors = new Map<string, Stickman>();
   private title: { time: number; cycle: number; fired: boolean } | null = null;
 
+  private snow!: THREE.Points;
+  private snowSpeed!: Float32Array;
+  private snowPhase!: Float32Array;
+  /** Turn off to disable camera shake. Set from the settings screen. */
+  shakeEnabled = true;
+
   private clock = new THREE.Clock();
   private lookAt = new THREE.Vector3(0, 1, 0);
   private view: CameraView = { kind: "title" };
@@ -115,32 +122,33 @@ export class World {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.88;
+    this.renderer.toneMappingExposure = 0.95;
     this.host.appendChild(this.renderer.domElement);
 
-    this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 400);
-    this.scene.background = new THREE.Color("#0a0b0d");
-    this.scene.fog = new THREE.Fog("#0a0b0d", 80, 190);
+    this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 1600);
+    this.scene.background = new THREE.Color("#b9cfe6");
+    this.scene.fog = new THREE.Fog("#c4d6e8", 90, 480);
 
-    this.buildPit();
+    this.buildWorld();
+    this.buildSnow();
     this.scene.add(this.floorGroup);
     this.buildFloor();
 
     // The cage bars and rings are rebuilt for each radius, so the cage can close in smoothly.
     this.cageBars = new THREE.InstancedMesh(
       new THREE.CylinderGeometry(0.11, 0.11, CAGE_HEIGHT, 10).translate(0, CAGE_HEIGHT / 2, 0),
-      new THREE.MeshStandardMaterial({ color: "#6b7078", roughness: 0.45, metalness: 0.85 }),
+      new THREE.MeshStandardMaterial({ color: "#c3ccd6", roughness: 0.45, metalness: 0.3 }),
       BAR_COUNT,
     );
     this.cageBars.castShadow = true;
     this.cageBars.frustumCulled = false;
     this.scene.add(this.cageBars);
-    const steel = new THREE.MeshStandardMaterial({ color: "#5a5f67", roughness: 0.45, metalness: 0.85 });
+    const steel = new THREE.MeshStandardMaterial({ color: "#aab5c1", roughness: 0.45, metalness: 0.3 });
     const topRail = new THREE.MeshStandardMaterial({
-      color: "#c9824f",
-      emissive: "#a8501f",
-      emissiveIntensity: 0.9,
-      roughness: 0.5,
+      color: "#bfe8ff",
+      emissive: "#3aa8d8",
+      emissiveIntensity: 0.85,
+      roughness: 0.4,
       metalness: 0.5,
     });
     for (const [y, material] of [
@@ -175,8 +183,8 @@ export class World {
     });
     this.composer = new EffectComposer(this.renderer, target);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    // Bloom softens the laser beams. Phones skip it to stay smooth.
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.45, 0.45, 0.88);
+    // Bloom softens the laser beams. The threshold is high, so bright snow does not glow. Phones skip it.
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.4, 0.4, 1.35);
     this.bloom.enabled = !this.touchDevice;
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
@@ -381,95 +389,267 @@ export class World {
     return this.characters.get(id) ?? this.titleActors.get(id);
   }
 
-  /** The pit: concrete walls, steel ribs and pipes, work lamps, and a deep drop below the floor. */
-  private buildPit(): void {
+  /**
+   * The snow world: a pale sky, a snowfield with hills, mountains and pines, and the arena
+   * as a circle of ice cut into the snow, over a deep crevasse.
+   */
+  private buildWorld(): void {
     const outer = this.levels[0];
-    const wallHeight = PIT_WALL_HEIGHT + PIT_DEPTH;
-    const wall = new THREE.Mesh(
-      new THREE.CylinderGeometry(PIT_RADIUS, PIT_RADIUS, wallHeight, 96, 1, true),
-      new THREE.MeshStandardMaterial({ map: concreteTexture("#74777b", 0.1, 10, 4), roughness: 0.95, side: THREE.BackSide }),
-    );
-    wall.position.y = PIT_WALL_HEIGHT - wallHeight / 2;
-    wall.receiveShadow = true;
-    this.scene.add(wall);
 
-    // The ledge around the outside of the arena, and the shaft that drops away below it.
-    const ledgeTexture = steelFloorTexture();
-    ledgeTexture.repeat.set(PIT_RADIUS / 3, PIT_RADIUS / 3);
-    const ledge = new THREE.Mesh(
-      new THREE.RingGeometry(outer, PIT_RADIUS, 128).rotateX(-Math.PI / 2),
-      new THREE.MeshStandardMaterial({ map: ledgeTexture, color: "#8a8c90", roughness: 0.7, metalness: 0.3 }),
+    // Sky: a big inside-out sphere that fades from deep blue overhead to pale at the horizon.
+    const sky = new THREE.Mesh(
+      new THREE.SphereGeometry(1200, 32, 16),
+      new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        depthWrite: false,
+        fog: false,
+        uniforms: {
+          top: { value: new THREE.Color("#5f88bb") },
+          mid: { value: new THREE.Color("#b7cde4") },
+          bottom: { value: new THREE.Color("#dfe9f3") },
+        },
+        vertexShader: `varying vec3 vDir;
+          void main() {
+            vDir = normalize(position);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }`,
+        fragmentShader: `uniform vec3 top; uniform vec3 mid; uniform vec3 bottom; varying vec3 vDir;
+          void main() {
+            float h = vDir.y;
+            vec3 color = h < 0.0 ? bottom : mix(mid, top, pow(h, 0.5));
+            gl_FragColor = vec4(color, 1.0);
+          }`,
+      }),
     );
-    ledge.receiveShadow = true;
-    this.scene.add(ledge);
+    this.scene.add(sky);
 
-    const shaft = new THREE.Mesh(
+    // The snowfield, with a hole in the middle for the arena.
+    const snowTexture = snowSurfaceTexture();
+    snowTexture.repeat.set(70, 70);
+    const ground = new THREE.Mesh(
+      new THREE.RingGeometry(outer, WORLD_RADIUS, 160, 1).rotateX(-Math.PI / 2),
+      new THREE.MeshStandardMaterial({ map: snowTexture, color: "#f4f8fc", roughness: 1, metalness: 0 }),
+    );
+    ground.receiveShadow = true;
+    this.scene.add(ground);
+
+    // A soft lip of snow around the edge of the hole.
+    const lip = new THREE.Mesh(
+      new THREE.TorusGeometry(outer + 0.5, 1.1, 10, 128).rotateX(Math.PI / 2),
+      new THREE.MeshStandardMaterial({ color: "#f6f9fc", roughness: 1 }),
+    );
+    lip.scale.y = 0.55;
+    lip.position.y = 0.1;
+    lip.receiveShadow = true;
+    this.scene.add(lip);
+
+    // The crevasse: icy walls going down into the dark, with a column that holds the arena up.
+    const iceWall = new THREE.Mesh(
       new THREE.CylinderGeometry(outer, outer, PIT_DEPTH, 96, 1, true),
-      new THREE.MeshStandardMaterial({ map: concreteTexture("#4b4d51", 0.1, 10, 4), roughness: 0.95, side: THREE.BackSide }),
+      new THREE.MeshStandardMaterial({
+        map: iceSurfaceTexture(),
+        color: "#9ec3dd",
+        roughness: 0.35,
+        emissive: "#12384f",
+        emissiveIntensity: 0.5,
+        side: THREE.BackSide,
+      }),
     );
-    shaft.position.y = -PIT_DEPTH / 2;
-    this.scene.add(shaft);
+    iceWall.position.y = -PIT_DEPTH / 2;
+    this.scene.add(iceWall);
 
     const abyss = new THREE.Mesh(
       new THREE.CircleGeometry(outer + 1, 64).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: "#150b08" }),
+      new THREE.MeshBasicMaterial({ color: "#04101d" }),
     );
     abyss.position.y = -PIT_DEPTH;
     this.scene.add(abyss);
 
-    // A central column that holds the arena up. The outer levels fall past it.
-    const steel = new THREE.MeshStandardMaterial({ color: "#454a51", roughness: 0.5, metalness: 0.75 });
-    const column = new THREE.Mesh(new THREE.CylinderGeometry(4.5, 7, PIT_DEPTH - SLAB_THICKNESS, 32), steel);
+    const column = new THREE.Mesh(
+      new THREE.CylinderGeometry(4.5, 7, PIT_DEPTH - SLAB_THICKNESS, 32),
+      new THREE.MeshStandardMaterial({ color: "#86abc6", roughness: 0.4, emissive: "#102c40", emissiveIntensity: 0.4 }),
+    );
     column.position.y = -(PIT_DEPTH + SLAB_THICKNESS) / 2;
     this.scene.add(column);
 
-    // Vertical steel ribs and horizontal pipes around the wall.
-    for (let i = 0; i < 28; i++) {
-      const angle = (i / 28) * Math.PI * 2;
-      const rib = new THREE.Mesh(new THREE.BoxGeometry(2, PIT_WALL_HEIGHT, 1.3), steel);
-      rib.position.set(Math.cos(angle) * (PIT_RADIUS - 0.7), PIT_WALL_HEIGHT / 2, Math.sin(angle) * (PIT_RADIUS - 0.7));
-      rib.rotation.y = -angle + Math.PI / 2;
-      rib.castShadow = true;
-      rib.receiveShadow = true;
-      this.scene.add(rib);
-    }
-    for (const y of [5, 13, 21]) {
-      const pipe = new THREE.Mesh(new THREE.TorusGeometry(PIT_RADIUS - 1.5, 0.4, 14, 160).rotateX(Math.PI / 2), steel);
-      pipe.position.y = y;
-      this.scene.add(pipe);
-    }
+    this.buildScenery();
 
-    // Work lamps on the wall. A few real lights keep the scene cheap enough for phones.
-    const lampMaterial = new THREE.MeshStandardMaterial({ color: "#fff1d6", emissive: "#ffd9a0", emissiveIntensity: 1.6 });
-    for (let i = 0; i < 14; i++) {
-      const angle = (i / 14) * Math.PI * 2 + 0.13;
-      const lamp = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.7, 1.4), lampMaterial);
-      lamp.position.set(Math.cos(angle) * (PIT_RADIUS - 2.4), 14, Math.sin(angle) * (PIT_RADIUS - 2.4));
-      this.scene.add(lamp);
-    }
-    for (let i = 0; i < 4; i++) {
-      const angle = (i / 4) * Math.PI * 2 + 0.8;
-      const light = new THREE.PointLight("#ffe2b8", 520, 80, 1.6);
-      light.position.set(Math.cos(angle) * 24, 16, Math.sin(angle) * 24);
-      this.scene.add(light);
-    }
-
-    this.scene.add(new THREE.HemisphereLight("#b6c3d6", "#25221f", 0.55));
-    const key = new THREE.DirectionalLight("#fff0d8", 2.0);
-    key.position.set(-10, 42, 20);
-    key.castShadow = true;
+    this.scene.add(new THREE.HemisphereLight("#d3e3f4", "#9fb2c6", 1.05));
+    const sun = new THREE.DirectionalLight("#fff1dc", 2.4);
+    sun.position.set(-45, 62, 32);
+    sun.castShadow = true;
     const shadowSize = this.touchDevice ? 1024 : 2048;
-    key.shadow.mapSize.set(shadowSize, shadowSize);
-    const extent = 28;
-    key.shadow.camera.left = -extent;
-    key.shadow.camera.right = extent;
-    key.shadow.camera.top = extent;
-    key.shadow.camera.bottom = -extent;
-    key.shadow.camera.far = 110;
-    key.shadow.radius = 3;
-    key.shadow.bias = -0.0004;
-    key.shadow.normalBias = 0.04;
-    this.scene.add(key);
+    sun.shadow.mapSize.set(shadowSize, shadowSize);
+    const extent = 30;
+    sun.shadow.camera.left = -extent;
+    sun.shadow.camera.right = extent;
+    sun.shadow.camera.top = extent;
+    sun.shadow.camera.bottom = -extent;
+    sun.shadow.camera.far = 170;
+    sun.shadow.radius = 4;
+    sun.shadow.bias = -0.0004;
+    sun.shadow.normalBias = 0.05;
+    this.scene.add(sun);
+  }
+
+  /** Rolling snow drifts, distant mountains, and pine trees. Each kind is drawn in a single call. */
+  private buildScenery(): void {
+    const random = seededRandom(7);
+    const dummy = new THREE.Object3D();
+
+    // Drifts: low, wide mounds of snow on the ground around the arena.
+    const drifts = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(1, 24, 12),
+      new THREE.MeshStandardMaterial({ color: "#f1f6fb", roughness: 1 }),
+      90,
+    );
+    for (let i = 0; i < 90; i++) {
+      const angle = random() * Math.PI * 2;
+      const distance = 75 + random() * 260;
+      const width = 18 + random() * 40;
+      dummy.position.set(Math.cos(angle) * distance, -width * 0.18, Math.sin(angle) * distance);
+      dummy.scale.set(width, width * (0.25 + random() * 0.2), width * (0.7 + random() * 0.5));
+      dummy.rotation.y = random() * Math.PI;
+      dummy.updateMatrix();
+      drifts.setMatrixAt(i, dummy.matrix);
+    }
+    drifts.receiveShadow = true;
+    this.scene.add(drifts);
+
+    // Mountains: tall cones, bluish rock below and white snow on top, in a ring far away.
+    const mountainCount = 26;
+    const rock = new THREE.InstancedMesh(
+      new THREE.ConeGeometry(1, 1, 7),
+      new THREE.MeshStandardMaterial({ color: "#8fa5bd", roughness: 1, flatShading: true }),
+      mountainCount,
+    );
+    const caps = new THREE.InstancedMesh(
+      new THREE.ConeGeometry(1, 1, 7),
+      new THREE.MeshStandardMaterial({ color: "#f5f9fd", roughness: 1, flatShading: true }),
+      mountainCount,
+    );
+    for (let i = 0; i < mountainCount; i++) {
+      const angle = (i / mountainCount) * Math.PI * 2 + random() * 0.15;
+      const distance = 330 + random() * 70;
+      const width = 90 + random() * 90;
+      const height = 90 + random() * 120;
+      dummy.position.set(Math.cos(angle) * distance, height / 2 - 6, Math.sin(angle) * distance);
+      dummy.scale.set(width, height, width);
+      dummy.rotation.y = random() * Math.PI;
+      dummy.updateMatrix();
+      rock.setMatrixAt(i, dummy.matrix);
+      // The snow cap is the top third of the mountain, sitting on it.
+      dummy.position.set(Math.cos(angle) * distance, height * 0.68 - 6, Math.sin(angle) * distance);
+      dummy.scale.set(width * 0.36, height * 0.34, width * 0.36);
+      dummy.updateMatrix();
+      caps.setMatrixAt(i, dummy.matrix);
+    }
+    this.scene.add(rock, caps);
+
+    // Pine trees: a brown trunk, three stacked layers of dark green, and snow on top.
+    const treeCount = 170;
+    const trunks = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.45, 0.6, 1, 8),
+      new THREE.MeshStandardMaterial({ color: "#4d3a2c", roughness: 1 }),
+      treeCount,
+    );
+    const layers = [0, 1, 2].map(
+      () =>
+        new THREE.InstancedMesh(
+          new THREE.ConeGeometry(1, 1, 9),
+          new THREE.MeshStandardMaterial({ color: "#22463a", roughness: 0.95 }),
+          treeCount,
+        ),
+    );
+    const snowTops = new THREE.InstancedMesh(
+      new THREE.ConeGeometry(1, 1, 9),
+      new THREE.MeshStandardMaterial({ color: "#f6f9fc", roughness: 1 }),
+      treeCount,
+    );
+    for (let i = 0; i < treeCount; i++) {
+      const angle = random() * Math.PI * 2;
+      const distance = 58 + Math.pow(random(), 0.7) * 210;
+      const x = Math.cos(angle) * distance;
+      const z = Math.sin(angle) * distance;
+      const size = 1.8 + random() * 2.4;
+
+      dummy.rotation.set(0, 0, 0);
+      dummy.position.set(x, size * 0.9, z);
+      dummy.scale.set(size * 0.5, size * 1.8, size * 0.5);
+      dummy.updateMatrix();
+      trunks.setMatrixAt(i, dummy.matrix);
+
+      layers.forEach((layer, tier) => {
+        const radius = size * (2.3 - tier * 0.55);
+        const tall = size * (2.6 - tier * 0.3);
+        dummy.position.set(x, size * (2.1 + tier * 1.5), z);
+        dummy.scale.set(radius, tall, radius);
+        dummy.updateMatrix();
+        layer.setMatrixAt(i, dummy.matrix);
+      });
+      dummy.position.set(x, size * 6.1, z);
+      dummy.scale.set(size * 0.9, size * 1.3, size * 0.9);
+      dummy.updateMatrix();
+      snowTops.setMatrixAt(i, dummy.matrix);
+    }
+    for (const mesh of [trunks, ...layers, snowTops]) {
+      mesh.castShadow = true;
+      this.scene.add(mesh);
+    }
+  }
+
+  /** Snowfall: flakes drift down from above, swaying in a light wind, and start over at the top. */
+  private buildSnow(): void {
+    const count = this.touchDevice ? 1400 : 3600;
+    const positions = new Float32Array(count * 3);
+    this.snowSpeed = new Float32Array(count);
+    this.snowPhase = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const distance = Math.sqrt(Math.random()) * SNOW_RADIUS;
+      positions[i * 3] = Math.cos(angle) * distance;
+      positions[i * 3 + 1] = Math.random() * SNOW_HEIGHT;
+      positions[i * 3 + 2] = Math.sin(angle) * distance;
+      this.snowSpeed[i] = 2.2 + Math.random() * 3.2;
+      this.snowPhase[i] = Math.random() * Math.PI * 2;
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    this.snow = new THREE.Points(
+      geometry,
+      new THREE.PointsMaterial({
+        map: flakeTexture(),
+        size: 0.7,
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 0.95,
+        depthWrite: false,
+        color: "#ffffff",
+      }),
+    );
+    this.snow.frustumCulled = false;
+    this.scene.add(this.snow);
+  }
+
+  private updateSnow(dt: number, time: number): void {
+    const positions = this.snow.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const array = positions.array as Float32Array;
+    for (let i = 0; i < this.snowSpeed.length; i++) {
+      const base = i * 3;
+      array[base + 1] -= this.snowSpeed[i] * dt;
+      // A gentle sway, plus a light wind blowing to one side.
+      array[base] += (Math.sin(time * 0.7 + this.snowPhase[i]) * 0.9 + 1.2) * dt;
+      array[base + 2] += Math.cos(time * 0.5 + this.snowPhase[i]) * 0.6 * dt;
+      if (array[base + 1] < 0 || Math.hypot(array[base], array[base + 2]) > SNOW_RADIUS) {
+        // Start again at the top, somewhere over the arena.
+        const angle = Math.random() * Math.PI * 2;
+        const distance = Math.sqrt(Math.random()) * SNOW_RADIUS;
+        array[base] = Math.cos(angle) * distance;
+        array[base + 1] = SNOW_HEIGHT;
+        array[base + 2] = Math.sin(angle) * distance;
+      }
+    }
+    positions.needsUpdate = true;
   }
 
   /**
@@ -483,9 +663,9 @@ export class World {
     this.floorMaterials = [];
     this.tiles = [];
 
-    const texture = steelFloorTexture();
-    texture.repeat.set(0.14, 0.14); // extruded faces use meters as UVs, so this is one plate per ~7 m
-    const edge = new THREE.MeshStandardMaterial({ color: "#ff9a5a", emissive: "#d1561a", emissiveIntensity: 0.6, roughness: 0.5 });
+    const texture = iceSurfaceTexture();
+    texture.repeat.set(0.12, 0.12); // extruded faces use meters as UVs, so this is one pattern per ~8 m
+    const edge = new THREE.MeshStandardMaterial({ color: "#bdeaff", emissive: "#2fa3d6", emissiveIntensity: 0.55, roughness: 0.4 });
     this.floorMaterials.push(edge);
 
     this.levels.forEach((outer, level) => {
@@ -494,9 +674,9 @@ export class World {
       // Alternate the shade a little so neighboring levels are easy to tell apart.
       const material = new THREE.MeshStandardMaterial({
         map: texture,
-        color: level % 2 === 0 ? "#d2d4d9" : "#a9acb3",
-        roughness: 0.62,
-        metalness: 0.35,
+        color: level % 2 === 0 ? "#e4f1fa" : "#bdd6e8",
+        roughness: 0.38,
+        metalness: 0.05,
       });
       this.floorMaterials.push(material);
 
@@ -577,6 +757,7 @@ export class World {
     const now = performance.now();
 
     this.updateTitle(dt);
+    this.updateSnow(dt, now / 1000);
     this.updateFloor(dt);
     this.updateBeams(now);
     for (const character of this.characters.values()) character.update(dt);
@@ -586,7 +767,7 @@ export class World {
     this.updateCamera(dt);
     // Shake is applied for this frame only, so it never builds up in the camera's real position.
     const shakeOffset = new THREE.Vector3();
-    if (this.shakeAmount > 0.01) {
+    if (this.shakeEnabled && this.shakeAmount > 0.01) {
       shakeOffset.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(this.shakeAmount * 0.35);
       this.camera.position.add(shakeOffset);
       this.shakeAmount *= Math.exp(-dt * 6);
@@ -729,9 +910,9 @@ export class World {
 function makeLaser(): { group: THREE.Group; materials: THREE.MeshBasicMaterial[] } {
   const group = new THREE.Group();
   const layers: Array<{ radius: number; color: THREE.Color; opacity: number; additive: boolean }> = [
-    { radius: 0.09, color: new THREE.Color("#fff3ee").multiplyScalar(2.2), opacity: 1, additive: false },
-    { radius: 0.22, color: new THREE.Color("#ff4a3a").multiplyScalar(2), opacity: 0.55, additive: true },
-    { radius: 0.5, color: new THREE.Color("#ff2418").multiplyScalar(1.4), opacity: 0.22, additive: true },
+    { radius: 0.045, color: new THREE.Color("#fff3ee").multiplyScalar(2.4), opacity: 1, additive: false },
+    { radius: 0.11, color: new THREE.Color("#ff4a3a").multiplyScalar(2), opacity: 0.5, additive: true },
+    { radius: 0.24, color: new THREE.Color("#ff2418").multiplyScalar(1.4), opacity: 0.16, additive: true },
   ];
   const materials: THREE.MeshBasicMaterial[] = [];
   for (const layer of layers) {
@@ -788,80 +969,114 @@ function rand(min: number, max: number): number {
   return min + Math.random() * (max - min);
 }
 
-/** Plain concrete: even grey with fine grain and soft stains. Detailed enough not to look pixelated up close. */
-function concreteTexture(base: string, grain: number, repeatX: number, repeatY: number): THREE.CanvasTexture {
-  const size = 1024;
+/** Snow: nearly white with very fine blue-grey grain, so it reads as snow up close without looking like noise. */
+function snowSurfaceTexture(): THREE.CanvasTexture {
+  const size = 512;
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = base;
+  ctx.fillStyle = "#f2f6fa";
   ctx.fillRect(0, 0, size, size);
-  for (let i = 0; i < 90; i++) {
+  const image = ctx.getImageData(0, 0, size, size);
+  for (let i = 0; i < image.data.length; i += 4) {
+    const noise = (Math.random() - 0.5) * 255 * 0.045;
+    image.data[i] = clamp255(image.data[i] + noise);
+    image.data[i + 1] = clamp255(image.data[i + 1] + noise);
+    image.data[i + 2] = clamp255(image.data[i + 2] + noise * 0.8);
+  }
+  ctx.putImageData(image, 0, 0);
+  for (let i = 0; i < 60; i++) {
     const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
     ctx.save();
     ctx.translate(Math.random() * size, Math.random() * size);
-    const radius = 40 + Math.random() * 160;
+    const radius = 20 + Math.random() * 70;
     ctx.scale(radius, radius);
-    gradient.addColorStop(0, `rgba(0,0,0,${0.03 + Math.random() * 0.05})`);
-    gradient.addColorStop(1, "rgba(0,0,0,0)");
+    gradient.addColorStop(0, "rgba(150,175,205,0.07)");
+    gradient.addColorStop(1, "rgba(150,175,205,0)");
     ctx.fillStyle = gradient;
     ctx.fillRect(-1, -1, 2, 2);
     ctx.restore();
   }
-  const image = ctx.getImageData(0, 0, size, size);
-  for (let i = 0; i < image.data.length; i += 4) {
-    const noise = (Math.random() - 0.5) * 255 * grain;
-    image.data[i] = clamp255(image.data[i] + noise);
-    image.data[i + 1] = clamp255(image.data[i + 1] + noise);
-    image.data[i + 2] = clamp255(image.data[i + 2] + noise);
-  }
-  ctx.putImageData(image, 0, 0);
-  return finishTexture(canvas, repeatX, repeatY);
+  return finishTexture(canvas, 1, 1);
 }
 
-/** A dark steel floor: large plates with seams and rivets. No thin repeating lines, so nothing shimmers. */
-function steelFloorTexture(): THREE.CanvasTexture {
+/** Clear blue ice: soft cloudy depth with a few fine cracks. No thin repeating lines, so nothing shimmers. */
+function iceSurfaceTexture(): THREE.CanvasTexture {
   const size = 1024;
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#3a3d43";
+  ctx.fillStyle = "#c3dcee";
   ctx.fillRect(0, 0, size, size);
+  for (let i = 0; i < 70; i++) {
+    const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
+    ctx.save();
+    ctx.translate(Math.random() * size, Math.random() * size);
+    const radius = 50 + Math.random() * 190;
+    ctx.scale(radius, radius);
+    const light = Math.random() < 0.5;
+    gradient.addColorStop(0, light ? "rgba(255,255,255,0.22)" : "rgba(60,110,160,0.14)");
+    gradient.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(-1, -1, 2, 2);
+    ctx.restore();
+  }
+  // A few fine cracks that wander across the surface.
+  ctx.lineCap = "round";
+  for (let i = 0; i < 9; i++) {
+    let x = Math.random() * size;
+    let y = Math.random() * size;
+    let angle = Math.random() * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    for (let step = 0; step < 14; step++) {
+      angle += (Math.random() - 0.5) * 0.9;
+      x += Math.cos(angle) * (20 + Math.random() * 40);
+      y += Math.sin(angle) * (20 + Math.random() * 40);
+      ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = "rgba(255,255,255,0.35)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
   const image = ctx.getImageData(0, 0, size, size);
   for (let i = 0; i < image.data.length; i += 4) {
-    const noise = (Math.random() - 0.5) * 255 * 0.07;
+    const noise = (Math.random() - 0.5) * 255 * 0.035;
     image.data[i] = clamp255(image.data[i] + noise);
     image.data[i + 1] = clamp255(image.data[i + 1] + noise);
     image.data[i + 2] = clamp255(image.data[i + 2] + noise);
   }
   ctx.putImageData(image, 0, 0);
-  ctx.strokeStyle = "rgba(10,10,12,0.8)";
-  ctx.lineWidth = 6;
-  ctx.strokeRect(3, 3, size - 6, size - 6);
-  ctx.strokeStyle = "rgba(10,10,12,0.5)";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(size / 2, 0);
-  ctx.lineTo(size / 2, size);
-  ctx.moveTo(0, size / 2);
-  ctx.lineTo(size, size / 2);
-  ctx.stroke();
-  ctx.fillStyle = "rgba(150,155,165,0.35)";
-  for (const [x, y] of [
-    [28, 28],
-    [size - 28, 28],
-    [28, size - 28],
-    [size - 28, size - 28],
-    [size / 2 + 28, 28],
-    [28, size / 2 + 28],
-  ]) {
-    ctx.beginPath();
-    ctx.arc(x, y, 7, 0, Math.PI * 2);
-    ctx.fill();
-  }
   return finishTexture(canvas, 1, 1);
+}
+
+/** A soft round snowflake. */
+function flakeTexture(): THREE.CanvasTexture {
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  gradient.addColorStop(0, "rgba(255,255,255,1)");
+  gradient.addColorStop(0.45, "rgba(255,255,255,0.85)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, size, size);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+/** A small repeatable random generator, so the scenery looks the same on every visit. */
+function seededRandom(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state = (state * 1664525 + 1013904223) % 4294967296;
+    return state / 4294967296;
+  };
 }
 
 function finishTexture(canvas: HTMLCanvasElement, repeatX: number, repeatY: number): THREE.CanvasTexture {
