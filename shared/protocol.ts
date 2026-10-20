@@ -8,8 +8,12 @@ export type ClientMessage =
   /** Join a public match that is waiting for players, or open a new one. */
   | { type: "quick"; name: string }
   | { type: "join"; code: string; name: string }
+  /** Come back to a match after the connection dropped, using the token from `joined`. */
+  | { type: "rejoin"; code: string; playerId: string; token: string }
   | ({ type: "input" } & MoveInput)
   | { type: "lock"; yaw: number }
+  /** Spend the one sonar ping of the match. */
+  | { type: "sonar" }
   | {
       type: "start";
       /** How many bots to add. A match needs at least 2 players in total, bots included. */
@@ -17,6 +21,8 @@ export type ClientMessage =
       difficulty?: BotDifficulty;
     }
   | { type: "leave" };
+
+export type SonarBand = "near" | "mid" | "far";
 
 export type Phase = "LOBBY" | "HIDE" | "REVEAL" | "FIRE" | "RESULT" | "MATCH_OVER";
 
@@ -37,7 +43,7 @@ export interface RevealPlayer {
 
 // Messages the server sends to the browser.
 export type ServerMessage =
-  | { type: "joined"; code: string; playerId: string }
+  | { type: "joined"; code: string; playerId: string; token: string }
   | { type: "error"; message: string }
   | {
       type: "lobby";
@@ -80,6 +86,10 @@ export type ServerMessage =
   | { type: "fire"; beams: Beam[]; eliminated: string[]; kills: Kill[] }
   /** The outer ice broke away. Everyone listed in `fallen` was standing on it and fell into the crevasse. */
   | { type: "ring"; radius: number; fallen: string[] }
+  /** Private answer to a sonar ping: the direction (world yaw) of the nearest enemy, roughly, and how far. */
+  | { type: "sonar_result"; bearing: number; band: SonarBand }
+  /** Private warning to the player a sonar ping found. It says nothing about who pinged or from where. */
+  | { type: "sonar_alert" }
   | {
       type: "match_over";
       winnerId: string | null;

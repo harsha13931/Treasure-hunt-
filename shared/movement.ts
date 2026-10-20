@@ -1,4 +1,5 @@
 import { PLAYER_RADIUS, START_RING_RADIUS, WALK_SPEED } from "./config.js";
+import { pushOutOfPillars, type Pillar } from "./obstacles.js";
 
 export interface Pose {
   x: number;
@@ -40,7 +41,13 @@ export function clampToRing(pose: Pose, ringRadius: number): Pose {
  * Moves a pose for one simulation step. Used by both the server and the browser's prediction,
  * so they agree. Speed eases toward the wanted speed, which makes starting and stopping feel smooth.
  */
-export function stepPose(pose: Pose, input: MoveInput, dt: number, ringRadius: number): Pose {
+export function stepPose(
+  pose: Pose,
+  input: MoveInput,
+  dt: number,
+  ringRadius: number,
+  pillars: readonly Pillar[] = [],
+): Pose {
   const f = facing(input.yaw);
   // Right-hand direction: forward crossed with up.
   const r = { x: -f.z, z: f.x };
@@ -56,7 +63,23 @@ export function stepPose(pose: Pose, input: MoveInput, dt: number, ringRadius: n
   const vx = (pose.vx ?? 0) + (mx * WALK_SPEED - (pose.vx ?? 0)) * blend;
   const vz = (pose.vz ?? 0) + (mz * WALK_SPEED - (pose.vz ?? 0)) * blend;
 
-  return clampToRing({ x: pose.x + vx * dt, z: pose.z + vz * dt, yaw: input.yaw, vx, vz }, ringRadius);
+  let next: Pose = { x: pose.x + vx * dt, z: pose.z + vz * dt, yaw: input.yaw, vx, vz };
+
+  // Walking into a pillar slides along it instead of stopping dead.
+  if (pillars.length > 0) {
+    const out = pushOutOfPillars(next.x, next.z, pillars);
+    if (out.pushed) {
+      const into = vx * out.nx + vz * out.nz;
+      next = {
+        ...next,
+        x: out.x,
+        z: out.z,
+        vx: into < 0 ? vx - into * out.nx : vx,
+        vz: into < 0 ? vz - into * out.nz : vz,
+      };
+    }
+  }
+  return clampToRing(next, ringRadius);
 }
 
 /**

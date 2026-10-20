@@ -1,9 +1,11 @@
 import { ROOM_CODE_LENGTH, ROOM_SIZE, START_RING_RADIUS, TICK_MS, type BotDifficulty } from "../../shared/config.js";
 import type { Beam, Kill } from "../../shared/geometry.js";
+import { activePillars } from "../../shared/obstacles.js";
 import { facing, stepPose, type MoveInput, type Pose } from "../../shared/movement.js";
 import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../../shared/protocol.js";
 import { Audio } from "./audio.js";
 import { colorFor } from "./stickman.js";
+import { haptic } from "./haptics.js";
 import { FloatingJoystick, HoldButton } from "./touch.js";
 import { World } from "./world.js";
 
@@ -21,6 +23,8 @@ const STICK_TURN_SPEED = 1.9;
 /** How long a line stays in the elimination feed. */
 const FEED_MS = 7000;
 const FEED_MAX = 5;
+/** How long the sonar arrow stays up. */
+const SONAR_SHOW_MS = 9000;
 const isTouchDevice = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
 
 interface Me {
@@ -41,6 +45,7 @@ interface Settings {
   volume: number;
   shake: boolean;
   voice: boolean;
+  quality: "auto" | "low" | "high";
 }
 
 const state = {
@@ -80,6 +85,11 @@ const state = {
   showResults: false,
   /** The player an eliminated spectator is watching. */
   spectateId: null as string | null,
+  /** The last sonar answer: a world bearing, how far, and when to stop showing it. */
+  sonarBearing: null as number | null,
+  sonarBand: "" as string,
+  sonarUntil: 0,
+  sonarUsed: false,
 };
 
 const keys = new Set<string>();
@@ -135,6 +145,7 @@ const ui = {
   volumeLabel: byId("volume-label"),
   setShake: byId<HTMLInputElement>("set-shake"),
   setVoice: byId<HTMLInputElement>("set-voice"),
+  quality: byId("quality"),
   minimap: byId<HTMLCanvasElement>("minimap"),
   aliveCount: byId("alive-count"),
   ringRadius: byId("ring-radius"),
@@ -143,6 +154,10 @@ const ui = {
   controls: byId("controls"),
   controlsHint: byId("controls-hint"),
   lock: byId<HTMLButtonElement>("lock"),
+  sonar: byId<HTMLButtonElement>("sonar"),
+  sonarCompass: byId("sonar-compass"),
+  sonarArrow: byId("sonar-arrow"),
+  sonarText: byId("sonar-text"),
   spectating: byId("spectating"),
   specPrev: byId<HTMLButtonElement>("spec-prev"),
   specNext: byId<HTMLButtonElement>("spec-next"),
@@ -296,6 +311,7 @@ ui.again.addEventListener("click", () => {
 ui.toMenu.addEventListener("click", () => leaveRoom());
 
 ui.lock.addEventListener("click", () => lockIn());
+ui.sonar.addEventListener("click", () => useSonar());
 
 ui.musicToggle.addEventListener("click", () => {
   settings.music = !audio.isMusicOn;
@@ -312,6 +328,13 @@ ui.setVolume.addEventListener("input", () => {
   settings.volume = Number(ui.setVolume.value) / 100;
   applySettings();
   saveSettings();
+});
+ui.quality.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+  button.addEventListener("click", () => {
+    settings.quality = button.dataset.quality as Settings["quality"];
+    applySettings();
+    saveSettings();
+  });
 });
 ui.setVoice.addEventListener("change", () => {
   settings.voice = ui.setVoice.checked;
@@ -332,6 +355,7 @@ window.addEventListener("keydown", (event) => {
   if (isGameKey(event.code)) event.preventDefault();
   keys.add(event.code);
   if (event.code === "Space" && !event.repeat) lockIn();
+  if (event.code === "KeyF" && !event.repeat) useSonar();
   // Eliminated players use the turn keys to flip between the people still playing.
   if (state.screen === "game" && state.me?.alive !== true && !event.repeat) {
     if (event.code === "KeyQ" || event.code === "ArrowLeft") cycleSpectate(-1);
@@ -384,7 +408,19 @@ function connect(then: (socket: WebSocket) => void, onFail?: (message: string) =
     handle(message);
   });
   socket.addEventListener("close", () => {
-    if (state.leaving) return;
+    if (state.leaving || state.socket !== socket) return;
+    if (reconnecting) {
+      retryRejoin();
+      return;
+    }
+    // A match in progress can be rejoined, so try that before giving up.
+    if (state.playerId && loadSession()) {
+      reconnecting = true;
+      reconnectAttempts = 0;
+      showToast("Connection lost. Reconnecting…");
+      retryRejoin(500);
+      return;
+    }
     showToast("Disconnected from the server.");
     resetToHome();
   });
@@ -393,6 +429,72 @@ function connect(then: (socket: WebSocket) => void, onFail?: (message: string) =
     if (onFail) onFail(message);
     else ui.menuError.textContent = message;
   });
+}
+
+// ---------- Reconnecting ----------
+
+const SESSION_KEY = "laser-ring:session";
+const RECONNECT_ATTEMPTS = 20;
+const RECONNECT_DELAY_MS = 1500;
+let reconnecting = false;
+let reconnectAttempts = 0;
+
+interface Session {
+  code: string;
+  playerId: string;
+  token: string;
+}
+
+function saveSession(session: Session | null): void {
+  try {
+    if (session) sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    else sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    // Without storage, a page reload simply cannot rejoin.
+  }
+}
+
+function loadSession(): Session | null {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Partial<Session>) : null;
+    if (parsed && typeof parsed.code === "string" && typeof parsed.playerId === "string" && typeof parsed.token === "string") {
+      return { code: parsed.code, playerId: parsed.playerId, token: parsed.token };
+    }
+  } catch {
+    // Treat unreadable data as no session.
+  }
+  return null;
+}
+
+/** Tries to get back into the same seat. Called again after each failure, a few seconds apart. */
+function retryRejoin(delay = RECONNECT_DELAY_MS): void {
+  const session = loadSession();
+  if (!session || ++reconnectAttempts > RECONNECT_ATTEMPTS) {
+    giveUpReconnecting("Could not get back into the match.");
+    return;
+  }
+  window.setTimeout(() => {
+    if (!reconnecting) return;
+    connect(
+      (socket) => send({ type: "rejoin", ...session }, socket),
+      () => {},
+    );
+  }, delay);
+}
+
+function giveUpReconnecting(message: string): void {
+  reconnecting = false;
+  saveSession(null);
+  showToast(message);
+  resetToHome();
+}
+
+// A page reload in the middle of a match: try to take the same seat back.
+if (loadSession()) {
+  reconnecting = true;
+  reconnectAttempts = RECONNECT_ATTEMPTS - 2;
+  retryRejoin(0);
 }
 
 function send(message: ClientMessage, socket: WebSocket | null = state.socket): void {
@@ -404,9 +506,18 @@ function handle(message: ServerMessage): void {
     case "joined":
       state.playerId = message.playerId;
       state.code = message.code;
+      saveSession({ code: message.code, playerId: message.playerId, token: message.token });
+      if (reconnecting) {
+        reconnecting = false;
+        showToast("Reconnected.", true);
+      }
       break;
 
     case "error":
+      if (reconnecting) {
+        giveUpReconnecting(message.message);
+        break;
+      }
       if (state.screen === "game" || state.screen === "lobby" || state.screen === "results") {
         showToast(message.message);
       } else {
@@ -439,6 +550,20 @@ function handle(message: ServerMessage): void {
 
     case "fire":
       onFire(message.beams, message.eliminated, message.kills ?? []);
+      break;
+
+    case "sonar_result":
+      state.sonarBearing = message.bearing;
+      state.sonarBand = message.band;
+      state.sonarUntil = Date.now() + SONAR_SHOW_MS;
+      audio.playSonar();
+      haptic(30);
+      break;
+
+    case "sonar_alert":
+      audio.playSonarAlert();
+      haptic([60, 50, 60]);
+      showToast("Sonar ping detected! Someone is close.");
       break;
 
     case "ring":
@@ -483,6 +608,11 @@ function onLobby(): void {
 function onHide(message: Extract<ServerMessage, { type: "hide" }>): void {
   showScreen("game");
   state.phase = "HIDE";
+  if (message.volley === 1) {
+    // A new match: the sonar ping is ready again.
+    state.sonarUsed = false;
+    state.sonarBearing = null;
+  }
   audio.setIntensity(0.45);
   state.showResults = false;
   state.volley = message.volley;
@@ -520,7 +650,7 @@ function onSelf(message: Extract<ServerMessage, { type: "self" }>): void {
   state.pending = state.pending.filter((p) => p.seq > message.ack);
   let pose: Pose = { x: message.x, z: message.z, yaw: me.yaw, vx: message.vx, vz: message.vz };
   for (const pending of state.pending) {
-    pose = stepPose(pose, pending.input, DT, state.radius);
+    pose = stepPose(pose, pending.input, DT, state.radius, activePillars(state.radius));
   }
 
   const dx = pose.x - state.current.x;
@@ -583,6 +713,8 @@ function onFire(beams: Beam[], eliminated: string[], kills: Kill[]): void {
   for (const kill of kills) {
     addFeed(kill.victim, `was eliminated by`, kill.killers);
   }
+  // The shot that ends the match gets a moment of slow motion.
+  if (kills.length > 0 && state.players.filter((p) => p.alive).length <= 1) world.slowMotion(1.8);
   if (kills.length > 0) {
     // The same words are spoken, so players who are busy watching the fight still hear who went down.
     audio.speak(kills.map(killText).join(". "));
@@ -597,6 +729,7 @@ function onFire(beams: Beam[], eliminated: string[], kills: Kill[]): void {
   if (state.me && eliminated.includes(state.me.id)) {
     state.me.alive = false;
     audio.playEliminated();
+    haptic([120, 60, 260]);
     const by = kills.find((k) => k.victim === state.me?.id)?.killers ?? [];
     showToast(by.length ? `${joinNames(by)} eliminated you. You are out of the match.` : "You were hit. You are out of the match.");
   }
@@ -634,6 +767,7 @@ function onFallen(fallen: string[]): void {
   if (state.me && fallen.includes(state.me.id)) {
     state.me.alive = false;
     audio.playEliminated();
+    haptic([200, 80, 300]);
     showToast("The ice broke under you. You are out of the match.");
   }
 }
@@ -787,7 +921,7 @@ function stepInput(): void {
   };
   state.pending.push({ seq: input.seq, input });
   state.previous = { ...state.current };
-  state.current = { ...stepPose(state.current, input, DT, state.radius), yaw: me.yaw };
+  state.current = { ...stepPose(state.current, input, DT, state.radius, activePillars(state.radius)), yaw: me.yaw };
   state.moving = Math.hypot(state.current.vx ?? 0, state.current.vz ?? 0) > 0.5;
   send({ type: "input", ...input });
 }
@@ -799,6 +933,14 @@ function lockIn(): void {
   state.moving = false;
   send({ type: "lock", yaw: me.yaw });
   if (pointerLocked) document.exitPointerLock();
+  renderHud();
+}
+
+/** Spends the one sonar ping of the match. */
+function useSonar(): void {
+  if (!canTurn() || state.sonarUsed) return;
+  state.sonarUsed = true;
+  send({ type: "sonar" });
   renderHud();
 }
 
@@ -910,6 +1052,7 @@ function renderHud(): void {
     if (secondsToFire !== lastCountdown) {
       lastCountdown = secondsToFire;
       audio.playCountdown(secondsToFire === 1);
+      haptic(secondsToFire === 1 ? 40 : 15);
       // Restart the pop-in animation for each new number.
       ui.countdown.style.animation = "none";
       void ui.countdown.offsetWidth;
@@ -922,6 +1065,18 @@ function renderHud(): void {
   ui.controls.classList.toggle("hidden", !hiding);
   ui.lock.disabled = me?.locked === true;
   setText(ui.lock, me?.locked ? "Locked in" : "Lock in");
+  ui.sonar.disabled = state.sonarUsed || me?.locked === true;
+  setText(ui.sonar, state.sonarUsed ? "Used" : "Sonar");
+
+  // The sonar arrow keeps pointing at the same spot in the world, so it swings as you turn.
+  const sonarLive = state.sonarBearing !== null && Date.now() < state.sonarUntil && hiding;
+  ui.sonarCompass.classList.toggle("hidden", !sonarLive);
+  if (sonarLive && me) {
+    const turn = -((state.sonarBearing as number) - me.yaw);
+    ui.sonarArrow.style.transform = `rotate(${turn}rad)`;
+    const label = state.sonarBand === "near" ? "Very close" : state.sonarBand === "mid" ? "Medium range" : "Far away";
+    setText(ui.sonarText, `Nearest enemy · ${label}`);
+  }
   const controlsHelp = isTouchDevice
     ? "Left side walks · right side turns"
     : "WASD to walk · mouse to look (click the screen) · Space to lock in";
@@ -1049,6 +1204,14 @@ function drawMinimap(): void {
   ctx.stroke();
   ctx.restore();
 
+  ctx.fillStyle = "rgba(120, 170, 205, 0.9)";
+  for (const pillar of activePillars(state.radius)) {
+    const p = toPx(pillar.x, pillar.z);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, pillar.r * scale, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   const dot = (x: number, z: number, color: string, radius: number) => {
     const p = toPx(x, z);
     ctx.beginPath();
@@ -1090,6 +1253,7 @@ function leaveRoom(): void {
 }
 
 function resetToHome(): void {
+  saveSession(null);
   state.phase = "LOBBY";
   state.playerId = null;
   state.me = null;
@@ -1131,13 +1295,17 @@ function applySettings(): void {
   ui.volumeLabel.textContent = `${Math.round(settings.volume * 100)}%`;
   ui.setShake.checked = settings.shake;
   ui.setVoice.checked = settings.voice;
+  world.setQuality(settings.quality);
+  ui.quality.querySelectorAll("button").forEach((button) => {
+    button.setAttribute("aria-pressed", String(button.dataset.quality === settings.quality));
+  });
   audio.setVoice(settings.voice);
   ui.musicToggle.textContent = settings.music ? "Music on" : "Music off";
   ui.musicToggle.setAttribute("aria-pressed", String(settings.music));
 }
 
 function loadSettings(): Settings {
-  const fallback: Settings = { music: false, volume: 0.8, shake: true, voice: true };
+  const fallback: Settings = { music: false, volume: 0.8, shake: true, voice: true, quality: "auto" };
   try {
     const raw = localStorage.getItem("laser-ring:settings");
     if (!raw) return fallback;
@@ -1147,6 +1315,7 @@ function loadSettings(): Settings {
       volume: typeof parsed.volume === "number" ? Math.min(1, Math.max(0, parsed.volume)) : fallback.volume,
       shake: parsed.shake !== false,
       voice: parsed.voice !== false,
+      quality: parsed.quality === "low" || parsed.quality === "high" ? parsed.quality : "auto",
     };
   } catch {
     return fallback;

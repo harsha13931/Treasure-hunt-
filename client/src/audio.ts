@@ -271,6 +271,48 @@ export class Audio {
     }
   }
 
+  /** The sonar ping going out: a clean tone with a long, fading echo. */
+  playSonar(): void {
+    const ctx = this.ensure();
+    if (!ctx || !this.master) return;
+    const now = ctx.currentTime;
+    for (const [offset, level] of [[0, 0.2], [0.28, 0.09], [0.56, 0.045]] as const) {
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(1500, now + offset);
+      osc.frequency.exponentialRampToValueAtTime(980, now + offset + 0.35);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, now + offset);
+      gain.gain.exponentialRampToValueAtTime(level, now + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.5);
+      osc.connect(gain).connect(this.master);
+      osc.start(now + offset);
+      osc.stop(now + offset + 0.55);
+    }
+  }
+
+  /** A low, uneasy double pulse: something found you. */
+  playSonarAlert(): void {
+    const ctx = this.ensure();
+    if (!ctx || !this.master) return;
+    const now = ctx.currentTime;
+    for (const offset of [0, 0.16]) {
+      const osc = ctx.createOscillator();
+      osc.type = "square";
+      osc.frequency.value = 330;
+      const low = ctx.createBiquadFilter();
+      low.type = "lowpass";
+      low.frequency.value = 700;
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, now + offset);
+      gain.gain.exponentialRampToValueAtTime(0.12, now + offset + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.13);
+      osc.connect(low).connect(gain).connect(this.master);
+      osc.start(now + offset);
+      osc.stop(now + offset + 0.15);
+    }
+  }
+
   /** Someone drops into the crevasse: a long falling whistle with wind. */
   playFall(): void {
     const ctx = this.ensure();

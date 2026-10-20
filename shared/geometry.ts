@@ -1,5 +1,6 @@
 import { BEAM_HALF_WIDTH, BEAM_RANGE, MUZZLE_FORWARD, PLAYER_RADIUS } from "./config.js";
 import { facing } from "./movement.js";
+import { beamDistanceToPillar, type Pillar } from "./obstacles.js";
 
 export interface Vec2 {
   x: number;
@@ -40,8 +41,14 @@ export function muzzlePosition(pos: Vec2, yaw: number): Vec2 {
  * Traces one straight beam from `origin` along `dir`.
  * Stops at the first target it touches. The caller leaves the shooter out of `targets`.
  */
-export function traceBeam(origin: Vec2, dir: Vec2, targets: Target[]): { to: Vec2; hit: string | null } {
-  let bestT = BEAM_RANGE;
+export function traceBeam(
+  origin: Vec2,
+  dir: Vec2,
+  targets: Target[],
+  pillars: readonly Pillar[] = [],
+): { to: Vec2; hit: string | null } {
+  // A pillar in the way stops the beam, and anyone behind it is safe.
+  let bestT = beamDistanceToPillar(origin, dir, pillars, BEAM_RANGE) ?? BEAM_RANGE;
   let bestId: string | null = null;
   const reach = PLAYER_RADIUS + BEAM_HALF_WIDTH;
 
@@ -73,7 +80,11 @@ export function traceBeam(origin: Vec2, dir: Vec2, targets: Target[]): { to: Vec
  * Fires every living player's beam at once against the same snapshot of living players.
  * A player who is hit still gets to fire in this volley.
  */
-export function resolveVolley(shooters: Shooter[], alive: Target[]): { beams: Beam[]; eliminated: string[]; kills: Kill[] } {
+export function resolveVolley(
+  shooters: Shooter[],
+  alive: Target[],
+  pillars: readonly Pillar[] = [],
+): { beams: Beam[]; eliminated: string[]; kills: Kill[] } {
   const beams: Beam[] = [];
   const eliminated = new Set<string>();
   const killers = new Map<string, string[]>();
@@ -82,7 +93,7 @@ export function resolveVolley(shooters: Shooter[], alive: Target[]): { beams: Be
     const origin = muzzlePosition(shooter.pos, shooter.yaw);
     const dir = facing(shooter.yaw);
     const targets = alive.filter((t) => t.id !== shooter.id);
-    const { to, hit } = traceBeam(origin, dir, targets);
+    const { to, hit } = traceBeam(origin, dir, targets, pillars);
     beams.push({ shooter: shooter.id, from: origin, to, hit });
     if (hit) {
       eliminated.add(hit);

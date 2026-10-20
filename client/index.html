@@ -167,6 +167,14 @@
           <span>Sound volume <strong id="volume-label">80%</strong></span>
           <input id="set-volume" type="range" min="0" max="100" value="80" />
         </label>
+        <div class="field">
+          <span>Graphics</span>
+          <div id="quality" class="segmented" role="group" aria-label="Graphics quality">
+            <button type="button" data-quality="auto" aria-pressed="true">Auto</button>
+            <button type="button" data-quality="low">Low</button>
+            <button type="button" data-quality="high">High</button>
+          </div>
+        </div>
         <label class="check">
           <input id="set-voice" type="checkbox" checked />
           <span>Voice announcements</span>
@@ -192,10 +200,17 @@
         </div>
 
         <ul id="killfeed" class="killfeed" aria-live="polite"></ul>
+        <div id="sonar-compass" class="sonar-compass hidden" aria-live="polite">
+          <div class="sonar-dial"><span id="sonar-arrow" class="sonar-arrow">▲</span></div>
+          <span id="sonar-text"></span>
+        </div>
 
         <div id="controls" class="panel controls hidden">
           <p id="controls-hint" class="hint"></p>
-          <button id="lock" class="btn primary">Lock in</button>
+          <div class="controls-buttons">
+            <button id="sonar" class="btn" title="Once per match: points roughly toward the nearest enemy (F)">Sonar</button>
+            <button id="lock" class="btn primary">Lock in</button>
+          </div>
         </div>
 
         <!-- Phone controls. The joysticks float to wherever a thumb lands, and the buttons stay in the corners. -->

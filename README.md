@@ -25,6 +25,11 @@ A match needs **at least 2 players in total**, bots included, and holds up to 8.
 - **Snow world:** an open snowfield with mountains and pine trees, snow falling from above, and the arena as a circle of ice over a deep crevasse.
 - **The floor is deadly:** when the outer ice breaks, anyone standing on it falls into the crevasse and is out. There is no warning, so players have to judge for themselves when to stay toward the middle.
 - **Spectating:** once you are out, follow any player still alive from behind, and switch with the ◀ ▶ buttons or Q and E. Positions stay secret during the hide phase, so you can follow a player once they are revealed.
+- **Cover:** seven ice pillars stand on the floor. They block walking and block laser beams, so a player behind one is safe from shots from that side. They fall away with the ice as the ring closes. Bots use them for cover too.
+- **Sonar ping:** each player gets one per match (button or F). It points roughly toward the nearest enemy and says near, medium or far, but the enemy it finds gets a warning, so a ping is a trade.
+- **Reconnecting:** if the connection drops during a match, the player's spot is held for 45 seconds. They stand still, locked in, and the browser rejoins by itself (also after a page reload). A secret token stops anyone else taking the seat.
+- **Quality setting:** Auto, Low or High in Settings. The final shot of a match plays in slow motion. Phones buzz on elimination and on the countdown.
+- **Match log:** each finished match writes one JSON line to the server log (players, bots, volleys, seconds, shot, fell, sonar uses, winner) so the timings can be tuned from real play.
 - **Announcements:** every knock-out is called out by name, as a banner, in a feed, and out loud with the browser's built-in voice ("Ben was eliminated by Ann", "Cy fell into the crevasse"). Voice can be turned off in Settings.
 - **Score:** a generated soundtrack (bass, drums, pads, arpeggio) that builds when the lasers are about to fire.
 - **Steady frame rate:** one animation loop updates and draws; resolution adapts to the device if frames run long; bloom only runs while lasers are on screen; stick men are merged into a handful of meshes. Add `?perf=1` to the address to see fps, draw calls and resolution.

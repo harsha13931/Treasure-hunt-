@@ -5,15 +5,17 @@ import {
   QUICK_START_DELAY_MS,
   REVEAL_MS,
   RESULT_MS,
+  RECONNECT_GRACE_MS,
   RING_SHRINK_STEP,
+  SONAR_NOISE,
   ROOM_SIZE,
   START_RING_RADIUS,
   TICK_MS,
   WALK_SPEED,
 } from "../shared/config.js";
-import type { Pose } from "../shared/movement.js";
+import { startPoseFor, type Pose } from "../shared/movement.js";
 import type { ServerMessage } from "../shared/protocol.js";
-import { Room } from "./room.js";
+import { Room, type MatchSummary } from "./room.js";
 
 interface Client {
   id: string;
@@ -26,7 +28,7 @@ const FACE_NORTH = 0;
 
 /** Builds a room where the players start at exactly the poses given. */
 function roomWith(poses: Pose[]) {
-  return new Room("TEST1", { spawn: (index) => poses[index] });
+  return new Room("TEST1", { spawn: (index, count) => poses[index] ?? startPoseFor(index, count) });
 }
 
 function connect(room: Room, name: string): Client {
@@ -286,6 +288,151 @@ describe("Room", () => {
     }
     expect(lastOf(a, "ring")?.fallen).toEqual([]);
     expect(lastOf(b, "hide")?.you.alive).toBe(true);
+  });
+
+  describe("sonar", () => {
+    function duel() {
+      const room = roomWith([
+        { x: -6, z: 0, yaw: FACE_NORTH },
+        { x: 6, z: 0, yaw: FACE_NORTH },
+        { x: 6, z: -14, yaw: FACE_NORTH },
+      ]);
+      const a = connect(room, "Ann");
+      const b = connect(room, "Ben");
+      const c = connect(room, "Cy");
+      room.handle(a.id, { type: "start" });
+      return { room, a, b, c };
+    }
+
+    it("points roughly at the nearest enemy, says how far, and warns that enemy", () => {
+      const { room, a, b, c } = duel();
+      room.handle(a.id, { type: "sonar" });
+      const result = lastOf(a, "sonar_result");
+      expect(result).toBeDefined();
+      // Ben is due east of Ann, 12 meters away. East is yaw +90 degrees.
+      expect(Math.abs((result?.bearing ?? 0) - Math.PI / 2)).toBeLessThanOrEqual(SONAR_NOISE + 1e-9);
+      expect(result?.band).toBe("mid");
+      expect(countOf(b, "sonar_alert")).toBe(1);
+      expect(countOf(c, "sonar_alert")).toBe(0);
+      expect(countOf(a, "sonar_alert")).toBe(0);
+    });
+
+    it("works once per match", () => {
+      const { room, a } = duel();
+      room.handle(a.id, { type: "sonar" });
+      room.handle(a.id, { type: "sonar" });
+      expect(lastOf(a, "error")?.message).toBe("You already used your sonar ping.");
+      expect(countOf(a, "sonar_result")).toBe(1);
+    });
+
+    it("does not work after locking in", () => {
+      const { room, a } = duel();
+      room.handle(a.id, { type: "lock", yaw: FACE_NORTH });
+      room.handle(a.id, { type: "sonar" });
+      expect(lastOf(a, "error")?.message).toBe("You are locked in.");
+      expect(countOf(a, "sonar_result")).toBe(0);
+    });
+  });
+
+  describe("reconnecting", () => {
+    function setup() {
+      const room = roomWith([
+        { x: -5, z: 0, yaw: FACE_NORTH },
+        { x: 5, z: 0, yaw: FACE_NORTH },
+      ]);
+      const sendA = (m: ServerMessage) => messagesA.push(m);
+      const messagesA: ServerMessage[] = [];
+      const idA = room.join("Ann", sendA);
+      const b = connect(room, "Ben");
+      room.handle(idA, { type: "start" });
+      const token = (messagesA.find((m) => m.type === "joined") as Extract<ServerMessage, { type: "joined" }>).token;
+      return { room, idA, sendA, messagesA, b, token };
+    }
+
+    it("holds a dropped player's spot, and the round does not wait for them", () => {
+      const { room, idA, sendA, b } = setup();
+      room.disconnect(idA, sendA);
+      expect(room.currentPhase).toBe("HIDE");
+      // Ben locks in; Ann's connection is down, so she counts as locked and the reveal comes at once.
+      room.handle(b.id, { type: "lock", yaw: FACE_NORTH });
+      expect(room.currentPhase).toBe("REVEAL");
+      expect(lastOf(b, "reveal")?.players).toHaveLength(2);
+    });
+
+    it("lets the player back in with their token and shows them the current scene", () => {
+      const { room, idA, sendA, token, b } = setup();
+      room.disconnect(idA, sendA);
+      room.handle(b.id, { type: "lock", yaw: FACE_NORTH });
+
+      const back: ServerMessage[] = [];
+      room.reconnect(idA, token, (m) => back.push(m));
+      expect(back.find((m) => m.type === "joined")).toBeDefined();
+      expect(back.find((m) => m.type === "reveal")).toBeDefined();
+
+      vi.advanceTimersByTime(REVEAL_MS + 10);
+      expect(back.find((m) => m.type === "fire")).toBeDefined();
+    });
+
+    it("sends a returning player the hide screen when they come back mid-round", () => {
+      const { room, idA, sendA, token } = setup();
+      room.disconnect(idA, sendA);
+      const back: ServerMessage[] = [];
+      room.reconnect(idA, token, (m) => back.push(m));
+      const hide = back.find((m) => m.type === "hide") as Extract<ServerMessage, { type: "hide" }>;
+      expect(hide.you.x).toBe(-5);
+      expect(hide.you.locked).toBe(true);
+    });
+
+    it("refuses the wrong token", () => {
+      const { room, idA, sendA } = setup();
+      room.disconnect(idA, sendA);
+      expect(() => room.reconnect(idA, "nope", () => {})).toThrow();
+    });
+
+    it("ignores a late close from an old connection after the player is back", () => {
+      const { room, idA, sendA, token } = setup();
+      room.disconnect(idA, sendA);
+      const back: ServerMessage[] = [];
+      const newSend = (m: ServerMessage) => back.push(m);
+      room.reconnect(idA, token, newSend);
+      room.disconnect(idA, sendA); // the old socket finally reports it closed
+      vi.advanceTimersByTime(RECONNECT_GRACE_MS + 1000);
+      expect(room.isEmpty).toBe(false);
+      // Still connected: a real drop of the new connection is what counts.
+      room.disconnect(idA, newSend);
+      vi.advanceTimersByTime(RECONNECT_GRACE_MS + 1000);
+      expect(room.isEmpty).toBe(false); // Ben is still here
+    });
+
+    it("gives up on a player who stays away too long, and tells the room when it empties", () => {
+      let emptied = 0;
+      const room = new Room("GONE1", { onEmpty: () => emptied++, spawn: (i) => ({ x: i * 10 - 5, z: 0, yaw: 0 }) });
+      const sendA = () => {};
+      const idA = room.join("Ann", sendA);
+      const sendB = () => {};
+      const idB = room.join("Ben", sendB);
+      room.handle(idA, { type: "start" });
+      room.disconnect(idA, sendA);
+      room.disconnect(idB, sendB);
+      expect(emptied).toBe(0);
+      vi.advanceTimersByTime(RECONNECT_GRACE_MS + 1000);
+      expect(emptied).toBe(1);
+    });
+  });
+
+  it("reports a summary of each finished match", () => {
+    const summaries: MatchSummary[] = [];
+    const room = new Room("LOG01", {
+      onMatchEnd: (s) => summaries.push(s),
+      spawn: (i) => ({ x: i === 0 ? -5 : 5, z: 0, yaw: i === 0 ? FACE_EAST : FACE_NORTH, vx: 0, vz: 0 }),
+    });
+    const a = connect(room, "Ann");
+    const b = connect(room, "Ben");
+    room.handle(a.id, { type: "start" });
+    lockAll(room, [a, b], [FACE_EAST, FACE_NORTH]);
+    vi.advanceTimersByTime(REVEAL_MS + FIRE_MS + RESULT_MS + 100);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ room: "LOG01", people: 2, bots: 0, shot: 1, fell: 0, winner: "person" });
   });
 
   it("says who was knocked out and by whom", () => {

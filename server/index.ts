@@ -39,7 +39,14 @@ function newRoomCode(): string {
 
 function openRoom(isPublic: boolean): Room {
   const code = newRoomCode();
-  const room = new Room(code, { isPublic });
+  const room: Room = new Room(code, {
+    isPublic,
+    onMatchEnd: (summary) => console.log(JSON.stringify({ event: "match_end", ...summary })),
+    onEmpty: () => {
+      room.destroy();
+      rooms.delete(code);
+    },
+  });
   rooms.set(code, room);
   return room;
 }
@@ -137,6 +144,19 @@ wss.on("connection", (socket: WebSocket) => {
         } catch (error) {
           fail(error instanceof Error ? error.message : "Could not join.");
         }
+      } else if (msg.type === "rejoin") {
+        // Coming back after a dropped connection. The token proves this is the same player.
+        const code = typeof msg.code === "string" ? msg.code.trim().toUpperCase() : "";
+        const found = rooms.get(code);
+        const id = typeof msg.playerId === "string" ? msg.playerId : "";
+        try {
+          if (!found) throw new Error("That match is no longer available.");
+          found.reconnect(id, typeof msg.token === "string" ? msg.token : "", send);
+          room = found;
+          playerId = id;
+        } catch (error) {
+          fail(error instanceof Error ? error.message : "Could not rejoin.");
+        }
       } else {
         fail("Create or join a room first.");
       }
@@ -147,13 +167,7 @@ wss.on("connection", (socket: WebSocket) => {
   });
 
   socket.on("close", () => {
-    if (room && playerId) {
-      room.leave(playerId);
-      if (room.isEmpty) {
-        room.destroy();
-        rooms.delete(room.code);
-      }
-    }
+    if (room && playerId) room.disconnect(playerId, send);
   });
 });
 

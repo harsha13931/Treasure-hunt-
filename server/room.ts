@@ -4,12 +4,16 @@ import {
   BotDifficulty,
   FIRE_MS,
   FORCED_SHRINK_EVERY_VOLLEYS,
+  SONAR_MID,
+  SONAR_NEAR,
+  SONAR_NOISE,
   HIDE_MS,
   MAX_PLAYERS,
   MIN_PLAYERS,
   MIN_RING_RADIUS,
   NO_KILL_VOLLEYS_BEFORE_SHRINK,
   QUICK_START_DELAY_MS,
+  RECONNECT_GRACE_MS,
   REVEAL_MS,
   RESULT_MS,
   RING_SHRINK_STEP,
@@ -19,16 +23,37 @@ import {
 } from "../shared/config.js";
 import { resolveVolley, Shooter, Target, Vec2 } from "../shared/geometry.js";
 import { clampToRing, MoveInput, Pose, startPoseFor, stepPose } from "../shared/movement.js";
+import { activePillars, pushOutOfPillars, type Pillar } from "../shared/obstacles.js";
 import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../shared/protocol.js";
 import { BotPlan, planBot, stepBot } from "./bot.js";
 
 export type Send = (message: ServerMessage) => void;
 
+/** A short record of a finished match, for the server log. It helps tune the game from real play. */
+export interface MatchSummary {
+  room: string;
+  people: number;
+  bots: number;
+  volleys: number;
+  seconds: number;
+  /** Players knocked out by a laser, by falling, and sonar pings used. */
+  shot: number;
+  fell: number;
+  sonar: number;
+  /** Radius of the ring when the match ended. */
+  finalRadius: number;
+  winner: "person" | "bot" | "none";
+}
+
 export interface RoomOptions {
+  /** Called when a match ends. */
+  onMatchEnd?: (summary: MatchSummary) => void;
   /** Where each player starts a match. Tests use this to set up exact duels. */
   spawn?: (index: number, count: number) => Pose;
   /** A public room appears to Quick Match, and starts by itself once there are enough players. */
   isPublic?: boolean;
+  /** Called once the last person has left, so the owner can forget the room. */
+  onEmpty?: () => void;
 }
 
 interface Player {
@@ -45,6 +70,13 @@ interface Player {
   ack: number;
   /** What a bot has decided to do. Always null for people. */
   plan: BotPlan | null;
+  /** Each player has one sonar ping per match. */
+  sonarUsed: boolean;
+  /** A secret only this player's browser knows, so no one else can take their seat when reconnecting. */
+  token: string;
+  /** False while the connection is down. The player's spot is held for a while. */
+  connected: boolean;
+  dropTimer: ReturnType<typeof setTimeout> | null;
 }
 
 /** Caps how far a browser can run ahead of the server. About half a second of input. */
@@ -78,11 +110,20 @@ export class Room {
   private spawn: (index: number, count: number) => Pose;
   /** Where each living player stood at the last reveal. This is public, so bots may use it. */
   private lastRevealed = new Map<string, Vec2>();
+  /** The latest reveal and volley, kept so a player who reconnects can be shown the same scene. */
+  private lastRevealMessage: ServerMessage | null = null;
+  private lastFireMessage: ServerMessage | null = null;
+  private onEmpty: (() => void) | null;
+  private onMatchEnd: ((summary: MatchSummary) => void) | null;
+  private matchStartedAt = 0;
+  private tally = { shot: 0, fell: 0, sonar: 0, bots: 0, people: 0 };
 
   constructor(code: string, options: RoomOptions = {}) {
     this.code = code;
     this.spawn = options.spawn ?? startPoseFor;
     this.isPublic = options.isPublic ?? false;
+    this.onEmpty = options.onEmpty ?? null;
+    this.onMatchEnd = options.onMatchEnd ?? null;
   }
 
   /** True while the room is between matches and has a free spot, so a new player can join. */
@@ -112,14 +153,60 @@ export class Room {
     this.hostId ??= id;
     this.updateAutoStart();
 
-    send({ type: "joined", code: this.code, playerId: id });
+    send({ type: "joined", code: this.code, playerId: id, token: this.players.get(id)!.token });
     this.broadcastLobby();
     return id;
+  }
+
+  /**
+   * The connection of `send` dropped. Between matches that is the same as leaving. During a match the spot is
+   * held for a while: the player stands where they are, locked in, and can come back with their token.
+   */
+  disconnect(id: string, send: Send): void {
+    const player = this.players.get(id);
+    // A late close from an old connection must not undo a reconnect that already happened.
+    if (!player || player.send !== send) return;
+    const inMatch = this.phase !== "LOBBY" && this.phase !== "MATCH_OVER";
+    if (!inMatch) {
+      this.leave(id);
+      return;
+    }
+    player.connected = false;
+    player.send = noop;
+    if (this.phase === "HIDE" && player.alive && !player.locked) {
+      this.lockPlayer(player, player.pose.yaw);
+      this.revealIfEveryoneLocked();
+    }
+    if (player.dropTimer) clearTimeout(player.dropTimer);
+    player.dropTimer = setTimeout(() => this.leave(id), RECONNECT_GRACE_MS);
+    this.broadcastLobby();
+  }
+
+  /** Puts a returning player back in their seat and shows them where the match is. */
+  reconnect(id: string, token: string, send: Send): void {
+    const player = this.players.get(id);
+    if (!player || player.bot || player.token !== token) {
+      throw new Error("That match is no longer available.");
+    }
+    if (player.dropTimer) clearTimeout(player.dropTimer);
+    player.dropTimer = null;
+    player.connected = true;
+    player.send = send;
+
+    send({ type: "joined", code: this.code, playerId: id, token: player.token });
+    this.broadcastLobby();
+    if (this.phase === "HIDE") {
+      this.sendHide(player, this.publicPlayers());
+    } else if (this.phase === "REVEAL" || this.phase === "FIRE" || this.phase === "RESULT") {
+      if (this.lastRevealMessage) send(this.lastRevealMessage);
+      if (this.phase !== "REVEAL" && this.lastFireMessage) send(this.lastFireMessage);
+    }
   }
 
   leave(id: string): void {
     const player = this.players.get(id);
     if (!player) return;
+    if (player.dropTimer) clearTimeout(player.dropTimer);
     this.players.delete(id);
 
     if (this.hostId === id) {
@@ -138,9 +225,13 @@ export class Room {
     }
     this.updateAutoStart();
     this.broadcastLobby();
+    if (this.isEmpty) this.onEmpty?.();
   }
 
   destroy(): void {
+    for (const player of this.players.values()) {
+      if (player.dropTimer) clearTimeout(player.dropTimer);
+    }
     this.clearTimers();
     this.cancelAutoStart();
     this.players.clear();
@@ -173,6 +264,15 @@ export class Room {
         this.lockPlayer(player, finiteYaw(message.yaw));
         this.sendSelf(player);
         this.revealIfEveryoneLocked();
+        return;
+      }
+
+      case "sonar": {
+        if (this.phase !== "HIDE") throw new Error("Sonar only works while you are hiding.");
+        if (!player.alive) throw new Error("You are out of the game.");
+        if (player.locked) throw new Error("You are locked in.");
+        if (player.sonarUsed) throw new Error("You already used your sonar ping.");
+        this.pingSonar(player);
         return;
       }
 
@@ -211,6 +311,10 @@ export class Room {
       queue: [],
       ack: 0,
       plan: null,
+      sonarUsed: false,
+      token: randomBytes(12).toString("hex"),
+      connected: true,
+      dropTimer: null,
     };
   }
 
@@ -232,8 +336,14 @@ export class Room {
       player.queue = [];
       player.ack = 0;
       player.plan = null;
-      player.pose = this.spawn(index, all.length);
+      player.sonarUsed = false;
+      const spot = this.spawn(index, all.length);
+      // Nobody starts inside a pillar.
+      const out = pushOutOfPillars(spot.x, spot.z, activePillars(START_RING_RADIUS));
+      player.pose = { ...spot, x: out.x, z: out.z };
     });
+    this.matchStartedAt = Date.now();
+    this.tally = { shot: 0, fell: 0, sonar: 0, bots: botCount, people: all.length - botCount };
     this.radius = START_RING_RADIUS;
     this.noKillStreak = 0;
     this.volleysSinceShrink = 0;
@@ -259,7 +369,7 @@ export class Room {
     for (const player of this.livingPlayers()) {
       player.locked = false;
       player.queue = [];
-      player.plan = player.bot ? planBot(this.botPlanRadius(), known, quick, Date.now(), this.botSkill) : null;
+      player.plan = player.bot ? planBot(this.botPlanRadius(), known, quick, Date.now(), this.botSkill, Math.random, this.pillars()) : null;
     }
 
     this.sendHideToAll();
@@ -270,6 +380,12 @@ export class Room {
       }
       this.enterReveal();
     });
+
+    // Anyone whose connection is down simply stands still, so they never hold the others up.
+    for (const player of this.livingPlayers()) {
+      if (!player.connected) this.lockPlayer(player, player.pose.yaw);
+    }
+    this.revealIfEveryoneLocked();
   }
 
   /** Runs one simulation step for every living player who is still moving. */
@@ -278,12 +394,12 @@ export class Room {
     for (const player of this.livingPlayers()) {
       if (!player.locked) {
         if (player.bot && player.plan) {
-          player.pose = stepBot(player.pose, player.plan, this.radius, TICK_MS / 1000);
+          player.pose = stepBot(player.pose, player.plan, this.radius, TICK_MS / 1000, this.pillars());
           if (now >= player.plan.lockAt) player.locked = true;
         } else {
           const input = player.queue.shift();
           if (input) {
-            player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.radius);
+            player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.radius, this.pillars());
             player.ack = input.seq;
           }
         }
@@ -297,7 +413,7 @@ export class Room {
   private lockPlayer(player: Player, yaw: number): void {
     while (player.queue.length > 0) {
       const input = player.queue.shift() as MoveInput;
-      player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.radius);
+      player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.radius, this.pillars());
       player.ack = input.seq;
     }
     // Locking in means standing still, so the player stops dead.
@@ -342,7 +458,10 @@ export class Room {
     this.lastRevealed.clear();
     for (const player of living) this.lastRevealed.set(player.id, { x: player.pose.x, z: player.pose.z });
 
-    this.broadcast({ type: "reveal", volley: this.volley, fireAt, radius: this.radius, players });
+    const reveal: ServerMessage = { type: "reveal", volley: this.volley, fireAt, radius: this.radius, players };
+    this.lastRevealMessage = reveal;
+    this.lastFireMessage = null;
+    this.broadcast(reveal);
     this.schedule(REVEAL_MS, () => this.enterFire());
   }
 
@@ -352,7 +471,7 @@ export class Room {
     const shooters: Shooter[] = living.map((player) => ({ id: player.id, pos: player.pose, yaw: player.pose.yaw }));
     const targets: Target[] = living.map((player) => ({ id: player.id, pos: player.pose }));
 
-    const { beams, eliminated, kills } = resolveVolley(shooters, targets);
+    const { beams, eliminated, kills } = resolveVolley(shooters, targets, this.pillars());
     for (const id of eliminated) {
       const player = this.players.get(id);
       if (player) player.alive = false;
@@ -360,8 +479,11 @@ export class Room {
       this.knockedOut.push(id);
     }
     this.lastKills = eliminated.length;
+    this.tally.shot += eliminated.length;
 
-    this.broadcast({ type: "fire", beams, eliminated, kills });
+    const fire: ServerMessage = { type: "fire", beams, eliminated, kills };
+    this.lastFireMessage = fire;
+    this.broadcast(fire);
     this.schedule(FIRE_MS, () => this.afterFire());
   }
 
@@ -380,6 +502,35 @@ export class Room {
       this.shrinkRing();
     }
     this.schedule(RESULT_MS, () => this.enterHide());
+  }
+
+  /**
+   * Answers a sonar ping with the rough direction and distance of the nearest enemy, and warns that enemy.
+   * The answer is off by up to SONAR_NOISE either way, and it is the picture at this moment: people keep moving.
+   */
+  private pingSonar(player: Player): void {
+    player.sonarUsed = true;
+    this.tally.sonar += 1;
+    let nearest: Player | null = null;
+    let best = Infinity;
+    for (const other of this.livingPlayers()) {
+      if (other.id === player.id) continue;
+      const distance = Math.hypot(other.pose.x - player.pose.x, other.pose.z - player.pose.z);
+      if (distance < best) {
+        best = distance;
+        nearest = other;
+      }
+    }
+    if (!nearest) return;
+    const truth = Math.atan2(nearest.pose.x - player.pose.x, nearest.pose.z - player.pose.z);
+    const bearing = truth + (Math.random() * 2 - 1) * SONAR_NOISE;
+    player.send({ type: "sonar_result", bearing, band: best < SONAR_NEAR ? "near" : best < SONAR_MID ? "mid" : "far" });
+    nearest.send({ type: "sonar_alert" });
+  }
+
+  /** The ice pillars still standing at the current ring size. */
+  private pillars(): Pillar[] {
+    return activePillars(this.radius);
   }
 
   /** The radius the floor will have after the next shrink. */
@@ -428,6 +579,7 @@ export class Room {
         player.pose = clampToRing(player.pose, this.radius);
       }
     }
+    this.tally.fell += fallen.length;
     this.broadcast({ type: "ring", radius: this.radius, fallen });
   }
 
@@ -441,6 +593,18 @@ export class Room {
       (id, index, all) => this.players.has(id) && all.indexOf(id) === index,
     );
     // Tell everyone who won while the bots are still in the list, then send the bots home.
+    this.onMatchEnd?.({
+      room: this.code,
+      people: this.tally.people,
+      bots: this.tally.bots,
+      volleys: this.volley,
+      seconds: Math.round((Date.now() - this.matchStartedAt) / 1000),
+      shot: this.tally.shot,
+      fell: this.tally.fell,
+      sonar: this.tally.sonar,
+      finalRadius: this.radius,
+      winner: winnerId === null ? "none" : this.players.get(winnerId)?.bot ? "bot" : "person",
+    });
     this.broadcast({ type: "match_over", winnerId, players: this.publicPlayers(), ranking });
     this.removeBots();
     this.updateAutoStart();
@@ -535,24 +699,27 @@ export class Room {
   private sendHideToAll(): void {
     const players = this.publicPlayers();
     for (const player of this.players.values()) {
-      if (player.bot) continue;
-      player.send({
-        type: "hide",
-        volley: this.volley,
-        endsAt: this.endsAt,
-        radius: this.radius,
-        you: {
-          alive: player.alive,
-          x: player.pose.x,
-          z: player.pose.z,
-          yaw: player.pose.yaw,
-          vx: player.pose.vx ?? 0,
-          vz: player.pose.vz ?? 0,
-          locked: player.locked,
-        },
-        players,
-      });
+      if (!player.bot) this.sendHide(player, players);
     }
+  }
+
+  private sendHide(player: Player, players: PublicPlayer[]): void {
+    player.send({
+      type: "hide",
+      volley: this.volley,
+      endsAt: this.endsAt,
+      radius: this.radius,
+      you: {
+        alive: player.alive,
+        x: player.pose.x,
+        z: player.pose.z,
+        yaw: player.pose.yaw,
+        vx: player.pose.vx ?? 0,
+        vz: player.pose.vz ?? 0,
+        locked: player.locked,
+      },
+      players,
+    });
   }
 
   private sendSelf(player: Player): void {

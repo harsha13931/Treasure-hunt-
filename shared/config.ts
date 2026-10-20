@@ -35,6 +35,16 @@ export const BEAM_RANGE = 80;
 export const BOT_SKILL = { easy: 0.15, normal: 0.5, hard: 0.9 } as const;
 export type BotDifficulty = keyof typeof BOT_SKILL;
 
+// The sonar ping: each player gets one per match. It points roughly toward the nearest enemy.
+/** How far off the bearing can be, in radians, either way. */
+export const SONAR_NOISE = 0.45;
+/** Distances (meters) that split the answer into near, mid and far. */
+export const SONAR_NEAR = 8;
+export const SONAR_MID = 16;
+
+/** How long a dropped player's spot is held during a match, so a phone that loses signal can come back. */
+export const RECONNECT_GRACE_MS = 45_000;
+
 // Phase timings.
 export const HIDE_MS = 30_000;
 export const REVEAL_MS = 3_000;

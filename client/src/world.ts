@@ -15,6 +15,8 @@ import {
 } from "../../shared/config.js";
 import type { Beam } from "../../shared/geometry.js";
 import { facing } from "../../shared/movement.js";
+import { PILLARS, PILLAR_HEIGHT, type Pillar } from "../../shared/obstacles.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { Effects } from "./effects.js";
 import { Stickman } from "./stickman.js";
 
@@ -50,6 +52,8 @@ interface Tile {
   mesh: THREE.Mesh;
   /** Index of the floor level this piece belongs to. 0 is the outermost ring. */
   level: number;
+  /** Pieces that are not a whole floor level, like pillars, break away once the ring is smaller than this. */
+  threshold?: number;
   falling: boolean;
   delay: number;
   /** Where the piece rests while the floor is whole. */
@@ -66,6 +70,7 @@ const CAMERA_TURN_RATE = 5;
 const CAGE_CLOSE_DELAY = 0.7; // seconds the cage waits while the floor breaks away
 const SLAB_THICKNESS = 0.9;
 const MIN_PIXEL_RATIO = 0.7;
+const SLOW_MOTION_SCALE = 0.3;
 const SNOW_RADIUS = 95;
 const SNOW_HEIGHT = 75;
 const BEAM_GROW_MS = 140;
@@ -125,6 +130,9 @@ export class World {
   private pixelRatio = 1;
   private frameAverage = 1 / 60;
   private adaptTimer = 0;
+  private qualityMode: "auto" | "low" | "high" = "auto";
+  private timeScale = 1;
+  private slowLeft = 0;
   private slowSeconds = 0;
   private lowPower = false;
   private sun!: THREE.DirectionalLight;
@@ -250,7 +258,7 @@ export class World {
     }
 
     this.targetRadius = radius;
-    const lost = this.tiles.filter((tile) => !tile.falling && this.levels[tile.level] > radius + 0.01);
+    const lost = this.tiles.filter((tile) => !tile.falling && (tile.threshold ?? this.levels[tile.level]) > radius + 0.01);
     if (!animate) {
       for (const tile of lost) this.removeTile(tile);
       this.shownRadius = radius;
@@ -749,6 +757,27 @@ export class World {
       this.floorGroup.add(rim);
       this.tiles.push(this.newTile(rim, level));
     });
+
+    // Ice pillars. Each one stands until the ring closes past it, then falls with the floor.
+    const pillarMaterial = new THREE.MeshStandardMaterial({
+      color: "#d7ecfb",
+      roughness: 0.18,
+      metalness: 0.1,
+      emissive: "#4cb4e6",
+      emissiveIntensity: 0.16,
+      flatShading: true,
+    });
+    this.floorMaterials.push(pillarMaterial);
+    for (const pillar of PILLARS) {
+      const mesh = new THREE.Mesh(pillarGeometry(pillar), pillarMaterial);
+      mesh.position.set(pillar.x, PILLAR_HEIGHT / 2, pillar.z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      this.floorGroup.add(mesh);
+      const tile = this.newTile(mesh, 0);
+      tile.threshold = Math.hypot(pillar.x, pillar.z) + pillar.r;
+      this.tiles.push(tile);
+    }
   }
 
   private newTile(mesh: THREE.Mesh, level: number): Tile {
@@ -803,32 +832,61 @@ export class World {
    * so the picture always shows the latest positions and camera.
    */
   render(): void {
-    const dt = Math.min(0.1, this.clock.getDelta());
+    const realDt = Math.min(0.1, this.clock.getDelta());
+    // Slow motion stretches the action but not the camera or the snow.
+    if (this.slowLeft > 0) {
+      this.slowLeft -= realDt;
+      this.timeScale += (SLOW_MOTION_SCALE - this.timeScale) * Math.min(1, realDt * 14);
+    } else {
+      this.timeScale += (1 - this.timeScale) * Math.min(1, realDt * 5);
+    }
+    const dt = realDt * this.timeScale;
     const now = performance.now();
     this.renderer.info.reset();
 
-    this.adaptQuality(dt);
+    this.adaptQuality(realDt);
     this.updateTitle(dt);
-    this.updateSnow(dt, now / 1000);
+    this.updateSnow(realDt, now / 1000);
     this.updateFloor(dt);
     this.updateBeams(now);
     for (const character of this.characters.values()) character.update(dt);
     for (const actor of this.titleActors.values()) actor.update(dt);
     this.effects.update(dt);
 
-    this.updateCamera(dt);
+    this.updateCamera(realDt);
     // Shake is applied for this frame only, so it never builds up in the camera's real position.
     const shake = this.scratch.shake.set(0, 0, 0);
     if (this.shakeEnabled && this.shakeAmount > 0.01) {
       shake.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(this.shakeAmount * 0.35);
       this.camera.position.add(shake);
-      this.shakeAmount *= Math.exp(-dt * 6);
+      this.shakeAmount *= Math.exp(-realDt * 6);
     }
 
     // Bloom only matters while lasers are on screen, and it is the most expensive effect, so it sleeps otherwise.
     this.bloom.enabled = !this.touchDevice && !this.lowPower && this.beams.length > 0;
     this.composer.render();
     this.camera.position.sub(shake);
+  }
+
+  /** Plays the next moments in slow motion, for the shot that decides a match. */
+  slowMotion(seconds: number): void {
+    this.slowLeft = seconds;
+  }
+
+  /**
+   * "auto" adjusts to the device by itself. "low" draws at reduced resolution without shadows or glow, for
+   * old phones. "high" keeps the full effects as long as the device can hold them.
+   */
+  setQuality(mode: "auto" | "low" | "high"): void {
+    this.qualityMode = mode;
+    this.slowSeconds = 0;
+    if (mode === "low") {
+      this.setLowPower(true);
+      this.setPixelRatio(Math.min(this.maxPixelRatio, MIN_PIXEL_RATIO + 0.1));
+    } else {
+      this.setLowPower(false);
+      this.setPixelRatio(this.maxPixelRatio);
+    }
   }
 
   /** Frame rate, draw calls, and resolution, for the optional on-screen readout. */
@@ -849,7 +907,7 @@ export class World {
    * shadows, bloom, and part of the snow are turned off too.
    */
   private adaptQuality(dt: number): void {
-    if (document.hidden) return;
+    if (document.hidden || this.qualityMode === "low") return;
     this.frameAverage += (dt - this.frameAverage) * 0.06;
     this.adaptTimer += dt;
     if (this.adaptTimer < 1) return;
@@ -861,7 +919,7 @@ export class World {
       if (this.pixelRatio > MIN_PIXEL_RATIO + 0.01) {
         this.setPixelRatio(Math.max(MIN_PIXEL_RATIO, this.pixelRatio * 0.85));
         this.slowSeconds = 0;
-      } else if (++this.slowSeconds >= 2) {
+      } else if (++this.slowSeconds >= 2 && this.qualityMode === "auto") {
         this.setLowPower(true);
       }
     } else if (fast) {
@@ -1234,4 +1292,14 @@ function finishTexture(canvas: HTMLCanvasElement, repeatX: number, repeatY: numb
 
 function clamp255(value: number): number {
   return Math.min(255, Math.max(0, value));
+}
+
+/** A tapered ice pillar with a pointed top, centered on itself so it tumbles around its own middle when it falls. */
+function pillarGeometry(pillar: Pillar): THREE.BufferGeometry {
+  const body = new THREE.CylinderGeometry(pillar.r * 0.82, pillar.r, PILLAR_HEIGHT * 0.86, 7, 1).translate(0, PILLAR_HEIGHT * 0.43, 0);
+  const tip = new THREE.ConeGeometry(pillar.r * 0.82, PILLAR_HEIGHT * 0.22, 7).translate(0, PILLAR_HEIGHT * 0.86 + PILLAR_HEIGHT * 0.11, 0);
+  const merged = mergeGeometries([body, tip], false) as THREE.BufferGeometry;
+  body.dispose();
+  tip.dispose();
+  return merged.translate(0, -PILLAR_HEIGHT / 2, 0);
 }
