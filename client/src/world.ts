@@ -11,11 +11,14 @@ import {
   PLAYER_RADIUS,
   ringLevels,
   START_RING_RADIUS,
-  WORLD_RADIUS,
 } from "../../shared/config.js";
+import { DEFAULT_MAP, type MapId } from "../../shared/maps.js";
 import type { Beam } from "../../shared/geometry.js";
 import { facing } from "../../shared/movement.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { Effects } from "./effects.js";
+import { BAR_COUNT, SLAB_THICKNESS } from "./maps/common.js";
+import { buildMap, type MapScene } from "./maps/index.js";
 import type { Actor } from "./actor.js";
 import { Robot, robotReady } from "./robot.js";
 import { Stickman } from "./stickman.js";
@@ -60,17 +63,12 @@ interface Tile {
   spin: THREE.Vector3;
 }
 
-const BAR_COUNT = 80;
-const CAGE_HEIGHT = 9;
 const CAGE_CLOSE_SPEED = 3.2; // meters per second that the cage closes in
 /** How quickly the camera catches up with the player's facing, per second. Lower is calmer. */
 const CAMERA_TURN_RATE = 5;
 const CAGE_CLOSE_DELAY = 0.7; // seconds the cage waits while the floor breaks away
-const SLAB_THICKNESS = 0.9;
 const MIN_PIXEL_RATIO = 0.7;
 const SLOW_MOTION_SCALE = 0.3;
-const SNOW_RADIUS = 95;
-const SNOW_HEIGHT = 75;
 const BEAM_GROW_MS = 140;
 const BEAM_HOLD_MS = 700;
 const BEAM_FADE_MS = 500;
@@ -105,9 +103,12 @@ export class World {
   private levels = ringLevels();
   private floorGroup = new THREE.Group();
   private tiles: Tile[] = [];
-  private floorMaterials: THREE.MeshStandardMaterial[] = [];
-  private cageBars: THREE.InstancedMesh;
-  private cageRings: THREE.Mesh[] = [];
+  /** Each floor level that is still whole, drawn as a single mesh. */
+  private levelMeshes = new Map<number, THREE.Mesh>();
+  /** The arenas built so far. Each is built the first time it is needed, then kept. */
+  private maps = new Map<MapId, MapScene>();
+  private mapId: MapId | null = null;
+  private mapScene!: MapScene;
   private targetRadius = START_RING_RADIUS;
   private shownRadius = START_RING_RADIUS;
   private closeDelay = 0;
@@ -126,9 +127,6 @@ export class World {
     onReveal: () => void;
   } | null = null;
 
-  private snow!: THREE.Points;
-  private snowSpeed!: Float32Array;
-  private snowPhase!: Float32Array;
   /** Turn off to disable camera shake. Set from the settings screen. */
   shakeEnabled = true;
 
@@ -149,7 +147,6 @@ export class World {
   private slowLeft = 0;
   private slowSeconds = 0;
   private lowPower = false;
-  private sun!: THREE.DirectionalLight;
   private fallingCount = 0;
   /** Which way the follow camera looks. It trails the player's real facing a little, so turning feels calm. */
   private cameraYaw = 0;
@@ -178,47 +175,8 @@ export class World {
     this.host.appendChild(this.renderer.domElement);
 
     this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 1600);
-    this.scene.background = new THREE.Color("#b9cfe6");
-    this.scene.fog = new THREE.Fog("#c4d6e8", 90, 480);
-
-    this.buildWorld();
-    this.buildSnow();
     this.scene.add(this.floorGroup);
-    this.buildFloor();
-
-    // The cage bars and rings are rebuilt for each radius, so the cage can close in smoothly.
-    this.cageBars = new THREE.InstancedMesh(
-      new THREE.CylinderGeometry(0.11, 0.11, CAGE_HEIGHT, 10).translate(0, CAGE_HEIGHT / 2, 0),
-      new THREE.MeshStandardMaterial({ color: "#c3ccd6", roughness: 0.45, metalness: 0.3 }),
-      BAR_COUNT,
-    );
-    this.cageBars.castShadow = true;
-    this.cageBars.frustumCulled = false;
-    this.scene.add(this.cageBars);
-    const steel = new THREE.MeshStandardMaterial({ color: "#aab5c1", roughness: 0.45, metalness: 0.3 });
-    const topRail = new THREE.MeshStandardMaterial({
-      color: "#bfe8ff",
-      emissive: "#3aa8d8",
-      emissiveIntensity: 0.85,
-      roughness: 0.4,
-      metalness: 0.5,
-    });
-    for (const [y, material] of [
-      [0.2, steel],
-      [CAGE_HEIGHT * 0.5, steel],
-      [CAGE_HEIGHT, topRail],
-    ] as const) {
-      // Built once at the full size. Closing the cage scales it, so no geometry is rebuilt while playing.
-      const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(START_RING_RADIUS, material === topRail ? 0.2 : 0.14, 10, 160).rotateX(Math.PI / 2),
-        material,
-      );
-      ring.position.y = y;
-      ring.castShadow = true;
-      ring.frustumCulled = false;
-      this.cageRings.push(ring);
-      this.scene.add(ring);
-    }
+    this.setMap(DEFAULT_MAP);
 
     this.scene.add(this.beamGroup);
     this.effects = new Effects(this.scene);
@@ -256,6 +214,33 @@ export class World {
   }
 
   /**
+   * Moves the match to another arena: new scenery, light, floor and fence. Arenas are built the first time they
+   * are needed and kept, so going back to one is instant. The floor is made whole again.
+   */
+  setMap(id: MapId): void {
+    if (this.mapId === id) return;
+    if (this.mapScene) this.scene.remove(this.mapScene.root);
+    let next = this.maps.get(id);
+    if (!next) {
+      next = buildMap(id, { touch: this.touchDevice, levels: this.levels });
+      this.maps.set(id, next);
+    }
+    this.mapId = id;
+    this.mapScene = next;
+    this.scene.add(next.root);
+    this.scene.background = new THREE.Color(next.background);
+    this.scene.fog = next.fog;
+    this.renderer.toneMappingExposure = next.exposure;
+    next.setLowPower(this.lowPower);
+    next.sun.castShadow = !this.lowPower;
+
+    this.targetRadius = START_RING_RADIUS;
+    this.shownRadius = START_RING_RADIUS;
+    this.buildFloor();
+    this.applyRadius(START_RING_RADIUS);
+  }
+
+  /**
    * Sets the cage radius. When it gets smaller, the floor levels outside it break away and fall,
    * and the cage closes in. Pass `animate: false` to jump straight to the new state.
    * Returns how many pieces of floor broke away, which is zero when nothing changed.
@@ -273,6 +258,15 @@ export class World {
     }
 
     this.targetRadius = radius;
+    // A level that is about to break splits into slabs first, so the slabs can fall one by one.
+    for (const level of [...this.levelMeshes.keys()]) {
+      if (this.levels[level] <= radius + 0.01) continue;
+      if (animate) this.explodeLevel(level);
+      else {
+        this.discardLevelMesh(this.levelMeshes.get(level) as THREE.Mesh);
+        this.levelMeshes.delete(level);
+      }
+    }
     const lost = this.tiles.filter((tile) => !tile.falling && this.levels[tile.level] > radius + 0.01);
     if (!animate) {
       for (const tile of lost) this.removeTile(tile);
@@ -542,6 +536,8 @@ export class World {
     this.characters.clear();
     this.setTitleScene(false);
     this.clearBeams();
+    for (const map of this.maps.values()) map.dispose();
+    this.maps.clear();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }
@@ -551,321 +547,75 @@ export class World {
   }
 
   /**
-   * The snow world: a pale sky, a snowfield with hills, mountains and pines, and the arena
-   * as a circle of ice cut into the snow, over a deep crevasse.
-   */
-  private buildWorld(): void {
-    const outer = this.levels[0];
-
-    // Sky: a big inside-out sphere that fades from deep blue overhead to pale at the horizon.
-    const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(1200, 32, 16),
-      new THREE.ShaderMaterial({
-        side: THREE.BackSide,
-        depthWrite: false,
-        fog: false,
-        uniforms: {
-          top: { value: new THREE.Color("#5f88bb") },
-          mid: { value: new THREE.Color("#b7cde4") },
-          bottom: { value: new THREE.Color("#dfe9f3") },
-        },
-        vertexShader: `varying vec3 vDir;
-          void main() {
-            vDir = normalize(position);
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          }`,
-        fragmentShader: `uniform vec3 top; uniform vec3 mid; uniform vec3 bottom; varying vec3 vDir;
-          void main() {
-            float h = vDir.y;
-            vec3 color = h < 0.0 ? bottom : mix(mid, top, pow(h, 0.5));
-            gl_FragColor = vec4(color, 1.0);
-          }`,
-      }),
-    );
-    this.scene.add(sky);
-
-    // The snowfield, with a hole in the middle for the arena.
-    const snowTexture = snowSurfaceTexture();
-    snowTexture.repeat.set(70, 70);
-    const ground = new THREE.Mesh(
-      new THREE.RingGeometry(outer, WORLD_RADIUS, 160, 1).rotateX(-Math.PI / 2),
-      new THREE.MeshStandardMaterial({ map: snowTexture, color: "#f4f8fc", roughness: 1, metalness: 0 }),
-    );
-    ground.receiveShadow = true;
-    this.scene.add(ground);
-
-    // A soft lip of snow around the edge of the hole.
-    const lip = new THREE.Mesh(
-      new THREE.TorusGeometry(outer + 0.5, 1.1, 10, 128).rotateX(Math.PI / 2),
-      new THREE.MeshStandardMaterial({ color: "#f6f9fc", roughness: 1 }),
-    );
-    lip.scale.y = 0.55;
-    lip.position.y = 0.1;
-    lip.receiveShadow = true;
-    this.scene.add(lip);
-
-    // The crevasse: icy walls going down into the dark, with a column that holds the arena up.
-    const iceWall = new THREE.Mesh(
-      new THREE.CylinderGeometry(outer, outer, PIT_DEPTH, 96, 1, true),
-      new THREE.MeshStandardMaterial({
-        map: iceSurfaceTexture(),
-        color: "#9ec3dd",
-        roughness: 0.35,
-        emissive: "#12384f",
-        emissiveIntensity: 0.5,
-        side: THREE.BackSide,
-      }),
-    );
-    iceWall.position.y = -PIT_DEPTH / 2;
-    this.scene.add(iceWall);
-
-    const abyss = new THREE.Mesh(
-      new THREE.CircleGeometry(outer + 1, 64).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: "#04101d" }),
-    );
-    abyss.position.y = -PIT_DEPTH;
-    this.scene.add(abyss);
-
-    const column = new THREE.Mesh(
-      new THREE.CylinderGeometry(4.5, 7, PIT_DEPTH - SLAB_THICKNESS, 32),
-      new THREE.MeshStandardMaterial({ color: "#86abc6", roughness: 0.4, emissive: "#102c40", emissiveIntensity: 0.4 }),
-    );
-    column.position.y = -(PIT_DEPTH + SLAB_THICKNESS) / 2;
-    this.scene.add(column);
-
-    this.buildScenery();
-
-    this.scene.add(new THREE.HemisphereLight("#d3e3f4", "#9fb2c6", 1.05));
-    const sun = new THREE.DirectionalLight("#fff1dc", 2.4);
-    this.sun = sun;
-    sun.position.set(-45, 62, 32);
-    sun.castShadow = true;
-    const shadowSize = this.touchDevice ? 1024 : 2048;
-    sun.shadow.mapSize.set(shadowSize, shadowSize);
-    const extent = 30;
-    sun.shadow.camera.left = -extent;
-    sun.shadow.camera.right = extent;
-    sun.shadow.camera.top = extent;
-    sun.shadow.camera.bottom = -extent;
-    sun.shadow.camera.far = 170;
-    sun.shadow.radius = 4;
-    sun.shadow.bias = -0.0004;
-    sun.shadow.normalBias = 0.05;
-    this.scene.add(sun);
-  }
-
-  /** Rolling snow drifts, distant mountains, and pine trees. Each kind is drawn in a single call. */
-  private buildScenery(): void {
-    const random = seededRandom(7);
-    const dummy = new THREE.Object3D();
-
-    // Drifts: low, wide mounds of snow on the ground around the arena.
-    const drifts = new THREE.InstancedMesh(
-      new THREE.SphereGeometry(1, 24, 12),
-      new THREE.MeshStandardMaterial({ color: "#f1f6fb", roughness: 1 }),
-      90,
-    );
-    for (let i = 0; i < 90; i++) {
-      const angle = random() * Math.PI * 2;
-      const distance = 75 + random() * 260;
-      const width = 18 + random() * 40;
-      dummy.position.set(Math.cos(angle) * distance, -width * 0.18, Math.sin(angle) * distance);
-      dummy.scale.set(width, width * (0.25 + random() * 0.2), width * (0.7 + random() * 0.5));
-      dummy.rotation.y = random() * Math.PI;
-      dummy.updateMatrix();
-      drifts.setMatrixAt(i, dummy.matrix);
-    }
-    drifts.receiveShadow = true;
-    this.scene.add(drifts);
-
-    // Mountains: tall cones, bluish rock below and white snow on top, in a ring far away.
-    const mountainCount = 26;
-    const rock = new THREE.InstancedMesh(
-      new THREE.ConeGeometry(1, 1, 7),
-      new THREE.MeshStandardMaterial({ color: "#8fa5bd", roughness: 1, flatShading: true }),
-      mountainCount,
-    );
-    const caps = new THREE.InstancedMesh(
-      new THREE.ConeGeometry(1, 1, 7),
-      new THREE.MeshStandardMaterial({ color: "#f5f9fd", roughness: 1, flatShading: true }),
-      mountainCount,
-    );
-    for (let i = 0; i < mountainCount; i++) {
-      const angle = (i / mountainCount) * Math.PI * 2 + random() * 0.15;
-      const distance = 330 + random() * 70;
-      const width = 90 + random() * 90;
-      const height = 90 + random() * 120;
-      dummy.position.set(Math.cos(angle) * distance, height / 2 - 6, Math.sin(angle) * distance);
-      dummy.scale.set(width, height, width);
-      dummy.rotation.y = random() * Math.PI;
-      dummy.updateMatrix();
-      rock.setMatrixAt(i, dummy.matrix);
-      // The snow cap is the top third of the mountain, sitting on it.
-      dummy.position.set(Math.cos(angle) * distance, height * 0.68 - 6, Math.sin(angle) * distance);
-      dummy.scale.set(width * 0.36, height * 0.34, width * 0.36);
-      dummy.updateMatrix();
-      caps.setMatrixAt(i, dummy.matrix);
-    }
-    this.scene.add(rock, caps);
-
-    // Pine trees: a brown trunk, three stacked layers of dark green, and snow on top.
-    const treeCount = 170;
-    const trunks = new THREE.InstancedMesh(
-      new THREE.CylinderGeometry(0.45, 0.6, 1, 8),
-      new THREE.MeshStandardMaterial({ color: "#4d3a2c", roughness: 1 }),
-      treeCount,
-    );
-    const layers = [0, 1, 2].map(
-      () =>
-        new THREE.InstancedMesh(
-          new THREE.ConeGeometry(1, 1, 9),
-          new THREE.MeshStandardMaterial({ color: "#22463a", roughness: 0.95 }),
-          treeCount,
-        ),
-    );
-    const snowTops = new THREE.InstancedMesh(
-      new THREE.ConeGeometry(1, 1, 9),
-      new THREE.MeshStandardMaterial({ color: "#f6f9fc", roughness: 1 }),
-      treeCount,
-    );
-    for (let i = 0; i < treeCount; i++) {
-      const angle = random() * Math.PI * 2;
-      const distance = 58 + Math.pow(random(), 0.7) * 210;
-      const x = Math.cos(angle) * distance;
-      const z = Math.sin(angle) * distance;
-      const size = 1.8 + random() * 2.4;
-
-      dummy.rotation.set(0, 0, 0);
-      dummy.position.set(x, size * 0.9, z);
-      dummy.scale.set(size * 0.5, size * 1.8, size * 0.5);
-      dummy.updateMatrix();
-      trunks.setMatrixAt(i, dummy.matrix);
-
-      layers.forEach((layer, tier) => {
-        const radius = size * (2.3 - tier * 0.55);
-        const tall = size * (2.6 - tier * 0.3);
-        dummy.position.set(x, size * (2.1 + tier * 1.5), z);
-        dummy.scale.set(radius, tall, radius);
-        dummy.updateMatrix();
-        layer.setMatrixAt(i, dummy.matrix);
-      });
-      dummy.position.set(x, size * 6.1, z);
-      dummy.scale.set(size * 0.9, size * 1.3, size * 0.9);
-      dummy.updateMatrix();
-      snowTops.setMatrixAt(i, dummy.matrix);
-    }
-    // The trees are far from the arena, so their shadows never reach it. Skipping them saves a lot of drawing.
-    for (const mesh of [trunks, ...layers, snowTops]) {
-      this.scene.add(mesh);
-    }
-  }
-
-  /** Snowfall: flakes drift down from above, swaying in a light wind, and start over at the top. */
-  private buildSnow(): void {
-    const count = this.touchDevice ? 1400 : 3600;
-    const positions = new Float32Array(count * 3);
-    this.snowSpeed = new Float32Array(count);
-    this.snowPhase = new Float32Array(count);
-    for (let i = 0; i < count; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const distance = Math.sqrt(Math.random()) * SNOW_RADIUS;
-      positions[i * 3] = Math.cos(angle) * distance;
-      positions[i * 3 + 1] = Math.random() * SNOW_HEIGHT;
-      positions[i * 3 + 2] = Math.sin(angle) * distance;
-      this.snowSpeed[i] = 2.2 + Math.random() * 3.2;
-      this.snowPhase[i] = Math.random() * Math.PI * 2;
-    }
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    this.snow = new THREE.Points(
-      geometry,
-      new THREE.PointsMaterial({
-        map: flakeTexture(),
-        size: 0.7,
-        sizeAttenuation: true,
-        transparent: true,
-        opacity: 0.95,
-        depthWrite: false,
-        color: "#ffffff",
-      }),
-    );
-    this.snow.frustumCulled = false;
-    this.scene.add(this.snow);
-  }
-
-  private updateSnow(dt: number, time: number): void {
-    const positions = this.snow.geometry.getAttribute("position") as THREE.BufferAttribute;
-    const array = positions.array as Float32Array;
-    for (let i = 0; i < this.snowSpeed.length; i++) {
-      const base = i * 3;
-      array[base + 1] -= this.snowSpeed[i] * dt;
-      // A gentle sway, plus a light wind blowing to one side.
-      array[base] += (Math.sin(time * 0.7 + this.snowPhase[i]) * 0.9 + 1.2) * dt;
-      array[base + 2] += Math.cos(time * 0.5 + this.snowPhase[i]) * 0.6 * dt;
-      if (array[base + 1] < 0 || Math.hypot(array[base], array[base + 2]) > SNOW_RADIUS) {
-        // Start again at the top, somewhere over the arena.
-        const angle = Math.random() * Math.PI * 2;
-        const distance = Math.sqrt(Math.random()) * SNOW_RADIUS;
-        array[base] = Math.cos(angle) * distance;
-        array[base + 1] = SNOW_HEIGHT;
-        array[base + 2] = Math.sin(angle) * distance;
-      }
-    }
-    positions.needsUpdate = true;
-  }
-
-  /**
    * The arena floor, built as concentric levels, each made of separate slabs.
    * Every level has its own edge, so the rings read clearly. When the ring shrinks,
    * the slabs of the outer level fall away one by one.
    */
   private buildFloor(): void {
     for (const tile of [...this.tiles]) this.removeTile(tile);
-    for (const material of this.floorMaterials) material.dispose();
-    this.floorMaterials = [];
+    for (const mesh of this.levelMeshes.values()) this.discardLevelMesh(mesh);
+    this.levelMeshes.clear();
     this.tiles = [];
-
-    const texture = iceSurfaceTexture();
-    texture.repeat.set(0.12, 0.12); // extruded faces use meters as UVs, so this is one pattern per ~8 m
-    const edge = new THREE.MeshStandardMaterial({ color: "#bdeaff", emissive: "#2fa3d6", emissiveIntensity: 0.55, roughness: 0.4 });
-    this.floorMaterials.push(edge);
+    const { floor } = this.mapScene;
 
     this.levels.forEach((outer, level) => {
-      const isCenter = level === this.levels.length - 1;
-      const inner = isCenter ? 0 : this.levels[level + 1];
-      // Alternate the shade a little so neighboring levels are easy to tell apart.
-      const material = new THREE.MeshStandardMaterial({
-        map: texture,
-        color: level % 2 === 0 ? "#e4f1fa" : "#bdd6e8",
-        roughness: 0.38,
-        metalness: 0.05,
-      });
-      this.floorMaterials.push(material);
-
-      const segments = isCenter ? 1 : Math.max(10, Math.round(outer * 1.5));
-      for (let i = 0; i < segments; i++) {
-        const a0 = (i / segments) * Math.PI * 2 + 0.004;
-        const a1 = ((i + 1) / segments) * Math.PI * 2 - 0.004;
-        const geometry = isCenter ? slabGeometry(0, outer, 0, Math.PI * 2) : slabGeometry(inner, outer, a0, a1);
-        // Center the slab on itself, so it tumbles around its own middle when it falls and not around the arena.
-        geometry.computeBoundingBox();
-        const middle = geometry.boundingBox!.getCenter(new THREE.Vector3());
-        geometry.translate(-middle.x, -middle.y, -middle.z);
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.position.copy(middle);
-        // Flat slabs do not need to cast shadows on anything.
-        mesh.receiveShadow = true;
-        this.floorGroup.add(mesh);
-        this.tiles.push(this.newTile(mesh, level));
-      }
+      // While a level is whole it is drawn as one piece, which keeps the number of draw calls low.
+      // It only splits into separate slabs at the moment it breaks and has to fall apart.
+      const slabs = this.levelSlabs(level);
+      const merged = mergeGeometries(slabs.map((slab) => slab.geometry), false);
+      for (const slab of slabs) slab.geometry.dispose();
+      const whole = new THREE.Mesh(merged, floor.levelMaterial(level));
+      whole.receiveShadow = true;
+      this.floorGroup.add(whole);
+      this.levelMeshes.set(level, whole);
 
       // The glowing edge of this level. It falls with the level.
-      const rim = new THREE.Mesh(new THREE.TorusGeometry(outer - 0.06, 0.07, 6, 160).rotateX(Math.PI / 2), edge);
+      const rim = new THREE.Mesh(new THREE.TorusGeometry(outer - 0.06, 0.07, 6, 160).rotateX(Math.PI / 2), floor.edge);
       rim.position.y = 0.02;
       rim.userData.rim = true;
       this.floorGroup.add(rim);
       this.tiles.push(this.newTile(rim, level));
     });
+  }
+
+  /** The slabs that make up one floor level, each shaped like a slice of the ring and sitting in place. */
+  private levelSlabs(level: number): Array<{ geometry: THREE.BufferGeometry }> {
+    const outer = this.levels[level];
+    const isCenter = level === this.levels.length - 1;
+    const inner = isCenter ? 0 : this.levels[level + 1];
+    const segments = isCenter ? 1 : Math.max(10, Math.round(outer * 1.5));
+    const slabs: Array<{ geometry: THREE.BufferGeometry }> = [];
+    for (let i = 0; i < segments; i++) {
+      const a0 = (i / segments) * Math.PI * 2 + 0.004;
+      const a1 = ((i + 1) / segments) * Math.PI * 2 - 0.004;
+      slabs.push({ geometry: isCenter ? slabGeometry(0, outer, 0, Math.PI * 2) : slabGeometry(inner, outer, a0, a1) });
+    }
+    return slabs;
+  }
+
+  /** Splits a whole level into its separate slabs, so each can fall by itself. */
+  private explodeLevel(level: number): void {
+    const whole = this.levelMeshes.get(level);
+    if (!whole) return;
+    const material = whole.material as THREE.Material;
+    this.discardLevelMesh(whole);
+    this.levelMeshes.delete(level);
+    for (const { geometry } of this.levelSlabs(level)) {
+      // Center the slab on itself, so it tumbles around its own middle when it falls and not around the arena.
+      geometry.computeBoundingBox();
+      const middle = geometry.boundingBox!.getCenter(new THREE.Vector3());
+      geometry.translate(-middle.x, -middle.y, -middle.z);
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.copy(middle);
+      mesh.receiveShadow = true;
+      this.floorGroup.add(mesh);
+      this.tiles.push(this.newTile(mesh, level));
+    }
+  }
+
+  private discardLevelMesh(mesh: THREE.Mesh): void {
+    this.floorGroup.remove(mesh);
+    mesh.geometry.dispose();
   }
 
   private newTile(mesh: THREE.Mesh, level: number): Tile {
@@ -895,12 +645,12 @@ export class World {
     for (let i = 0; i < BAR_COUNT; i++) {
       const angle = (i / BAR_COUNT) * Math.PI * 2;
       matrix.makeTranslation(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
-      this.cageBars.setMatrixAt(i, matrix);
+      this.mapScene.cage.bars.setMatrixAt(i, matrix);
     }
-    this.cageBars.instanceMatrix.needsUpdate = true;
+    this.mapScene.cage.bars.instanceMatrix.needsUpdate = true;
 
     const scale = radius / START_RING_RADIUS;
-    for (const ring of this.cageRings) ring.scale.set(scale, 1, scale);
+    for (const ring of this.mapScene.cage.rings) ring.scale.set(scale, 1, scale);
   }
 
   private resize(): void {
@@ -937,7 +687,7 @@ export class World {
 
     this.adaptQuality(realDt);
     this.updateTitle(dt);
-    this.updateSnow(realDt, now / 1000);
+    this.mapScene.update(realDt, now / 1000);
     this.updateFloor(dt);
     this.updateBeams(now);
     for (const character of this.characters.values()) character.update(dt);
@@ -1030,8 +780,8 @@ export class World {
 
   private setLowPower(on: boolean): void {
     this.lowPower = on;
-    this.sun.castShadow = !on;
-    this.snow.geometry.setDrawRange(0, on ? Math.floor(this.snowSpeed.length * 0.4) : this.snowSpeed.length);
+    this.mapScene.sun.castShadow = !on;
+    this.mapScene.setLowPower(on);
   }
 
   /** The cage closes in after the floor breaks away, and the broken slabs fall into the pit. */
@@ -1169,7 +919,7 @@ export class World {
         rate = 2.2;
       } else {
         const sweep = Math.PI / 2 + Math.sin(performance.now() * 0.00028) * 0.55;
-        desired.set(Math.cos(sweep) * 17, 5.2, Math.sin(sweep) * 17);
+        desired.set(Math.cos(sweep) * 14.5, 5.0, Math.sin(sweep) * 14.5);
         look.set(this.camera.aspect > 1.3 ? -4.2 : 0, 2.6, 0);
         rate = 3;
       }
@@ -1269,132 +1019,6 @@ function arrowShape(): THREE.Shape {
 
 function rand(min: number, max: number): number {
   return min + Math.random() * (max - min);
-}
-
-/** Snow: nearly white with very fine blue-grey grain, so it reads as snow up close without looking like noise. */
-function snowSurfaceTexture(): THREE.CanvasTexture {
-  const size = 512;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#f2f6fa";
-  ctx.fillRect(0, 0, size, size);
-  const image = ctx.getImageData(0, 0, size, size);
-  for (let i = 0; i < image.data.length; i += 4) {
-    const noise = (Math.random() - 0.5) * 255 * 0.045;
-    image.data[i] = clamp255(image.data[i] + noise);
-    image.data[i + 1] = clamp255(image.data[i + 1] + noise);
-    image.data[i + 2] = clamp255(image.data[i + 2] + noise * 0.8);
-  }
-  ctx.putImageData(image, 0, 0);
-  for (let i = 0; i < 60; i++) {
-    const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-    ctx.save();
-    ctx.translate(Math.random() * size, Math.random() * size);
-    const radius = 20 + Math.random() * 70;
-    ctx.scale(radius, radius);
-    gradient.addColorStop(0, "rgba(150,175,205,0.07)");
-    gradient.addColorStop(1, "rgba(150,175,205,0)");
-    ctx.fillStyle = gradient;
-    ctx.fillRect(-1, -1, 2, 2);
-    ctx.restore();
-  }
-  return finishTexture(canvas, 1, 1);
-}
-
-/** Clear blue ice: soft cloudy depth with a few fine cracks. No thin repeating lines, so nothing shimmers. */
-function iceSurfaceTexture(): THREE.CanvasTexture {
-  const size = 1024;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#c3dcee";
-  ctx.fillRect(0, 0, size, size);
-  for (let i = 0; i < 70; i++) {
-    const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-    ctx.save();
-    ctx.translate(Math.random() * size, Math.random() * size);
-    const radius = 50 + Math.random() * 190;
-    ctx.scale(radius, radius);
-    const light = Math.random() < 0.5;
-    gradient.addColorStop(0, light ? "rgba(255,255,255,0.22)" : "rgba(60,110,160,0.14)");
-    gradient.addColorStop(1, "rgba(255,255,255,0)");
-    ctx.fillStyle = gradient;
-    ctx.fillRect(-1, -1, 2, 2);
-    ctx.restore();
-  }
-  // A few fine cracks that wander across the surface.
-  ctx.lineCap = "round";
-  for (let i = 0; i < 9; i++) {
-    let x = Math.random() * size;
-    let y = Math.random() * size;
-    let angle = Math.random() * Math.PI * 2;
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    for (let step = 0; step < 14; step++) {
-      angle += (Math.random() - 0.5) * 0.9;
-      x += Math.cos(angle) * (20 + Math.random() * 40);
-      y += Math.sin(angle) * (20 + Math.random() * 40);
-      ctx.lineTo(x, y);
-    }
-    ctx.strokeStyle = "rgba(255,255,255,0.35)";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-  }
-  const image = ctx.getImageData(0, 0, size, size);
-  for (let i = 0; i < image.data.length; i += 4) {
-    const noise = (Math.random() - 0.5) * 255 * 0.035;
-    image.data[i] = clamp255(image.data[i] + noise);
-    image.data[i + 1] = clamp255(image.data[i + 1] + noise);
-    image.data[i + 2] = clamp255(image.data[i + 2] + noise);
-  }
-  ctx.putImageData(image, 0, 0);
-  return finishTexture(canvas, 1, 1);
-}
-
-/** A soft round snowflake. */
-function flakeTexture(): THREE.CanvasTexture {
-  const size = 64;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d")!;
-  const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  gradient.addColorStop(0, "rgba(255,255,255,1)");
-  gradient.addColorStop(0.45, "rgba(255,255,255,0.85)");
-  gradient.addColorStop(1, "rgba(255,255,255,0)");
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, size, size);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
-}
-
-/** A small repeatable random generator, so the scenery looks the same on every visit. */
-function seededRandom(seed: number): () => number {
-  let state = seed;
-  return () => {
-    state = (state * 1664525 + 1013904223) % 4294967296;
-    return state / 4294967296;
-  };
-}
-
-function finishTexture(canvas: HTMLCanvasElement, repeatX: number, repeatY: number): THREE.CanvasTexture {
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(repeatX, repeatY);
-  texture.anisotropy = 8;
-  texture.generateMipmaps = true;
-  texture.minFilter = THREE.LinearMipmapLinearFilter;
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
-}
-
-function clamp255(value: number): number {
-  return Math.min(255, Math.max(0, value));
 }
 
 /** The robot when its model has loaded, and the stick man if it could not be. */

@@ -18,6 +18,7 @@ import {
   START_RING_RADIUS,
   TICK_MS,
 } from "../shared/config.js";
+import { DEFAULT_MAP, isMapId, randomMap, type MapId } from "../shared/maps.js";
 import { resolveVolley, Shooter, Target, Vec2 } from "../shared/geometry.js";
 import { clampToRing, MoveInput, Pose, startPoseFor, stepPose } from "../shared/movement.js";
 import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../shared/protocol.js";
@@ -109,6 +110,9 @@ export class Room {
   private lastRevealMessage: ServerMessage | null = null;
   private lastFireMessage: ServerMessage | null = null;
   private onEmpty: (() => void) | null;
+  /** What the host picked for the next match, and the arena the current match is in. */
+  private selectedMap: MapId | "random" = DEFAULT_MAP;
+  private mapId: MapId = DEFAULT_MAP;
   private onMatchEnd: ((summary: MatchSummary) => void) | null;
   private matchStartedAt = 0;
   private tally = { shot: 0, fell: 0, bots: 0, people: 0 };
@@ -117,6 +121,8 @@ export class Room {
     this.code = code;
     this.spawn = options.spawn ?? startPoseFor;
     this.isPublic = options.isPublic ?? false;
+    // Public matches use a different arena each time.
+    if (this.isPublic) this.selectedMap = "random";
     this.onEmpty = options.onEmpty ?? null;
     this.onMatchEnd = options.onMatchEnd ?? null;
   }
@@ -272,7 +278,18 @@ export class Room {
         }
         const difficulty: BotDifficulty =
           message.difficulty && message.difficulty in BOT_SKILL ? message.difficulty : "normal";
+        const chosen = message.map === "random" || isMapId(message.map) ? message.map : this.selectedMap;
+        this.selectedMap = chosen;
         this.startMatch(bots, difficulty);
+        return;
+      }
+
+      case "map": {
+        if (player.id !== this.hostId) throw new Error("Only the host can choose the arena.");
+        if (this.phase !== "LOBBY" && this.phase !== "MATCH_OVER") return;
+        if (message.map !== "random" && !isMapId(message.map)) throw new Error("Unknown arena.");
+        this.selectedMap = message.map;
+        this.broadcastLobby();
         return;
       }
 
@@ -317,6 +334,7 @@ export class Room {
     this.cancelAutoStart();
     this.removeBots();
     this.botSkill = BOT_SKILL[difficulty];
+    this.mapId = this.selectedMap === "random" ? randomMap() : this.selectedMap;
 
     for (let index = 0; index < botCount; index++) {
       const id = randomBytes(8).toString("hex");
@@ -448,7 +466,7 @@ export class Room {
     this.lastRevealed.clear();
     for (const player of living) this.lastRevealed.set(player.id, { x: player.pose.x, z: player.pose.z });
 
-    const reveal: ServerMessage = { type: "reveal", volley: this.volley, fireAt, radius: this.radius, players };
+    const reveal: ServerMessage = { type: "reveal", map: this.mapId, volley: this.volley, fireAt, radius: this.radius, players };
     this.lastRevealMessage = reveal;
     this.lastFireMessage = null;
     this.broadcast(reveal);
@@ -656,6 +674,7 @@ export class Room {
       hostId: this.hostId,
       players: this.publicPlayers(),
       startsAt: this.startsAt,
+      map: this.selectedMap,
       isPublic: this.isPublic,
     });
   }
@@ -674,6 +693,7 @@ export class Room {
   private sendHide(player: Player, players: PublicPlayer[]): void {
     player.send({
       type: "hide",
+      map: this.mapId,
       volley: this.volley,
       endsAt: this.endsAt,
       radius: this.radius,

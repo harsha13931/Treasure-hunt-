@@ -1,5 +1,6 @@
 import type { Beam, Kill } from "./geometry.js";
 import type { BotDifficulty } from "./config.js";
+import type { MapId } from "./maps.js";
 import type { MoveInput } from "./movement.js";
 
 // Messages the browser sends to the server.
@@ -17,7 +18,11 @@ export type ClientMessage =
       /** How many bots to add. A match needs at least 2 players in total, bots included. */
       bots?: number;
       difficulty?: BotDifficulty;
+      /** Which arena, or "random". Leave out to use what the host picked in the lobby. */
+      map?: MapId | "random";
     }
+  /** The host picks the arena in the lobby. Everyone sees the choice. */
+  | { type: "map"; map: MapId | "random" }
   | { type: "leave" };
 
 export type Phase = "LOBBY" | "HIDE" | "REVEAL" | "FIRE" | "RESULT" | "MATCH_OVER";
@@ -51,11 +56,15 @@ export type ServerMessage =
       players: PublicPlayer[];
       /** A public match starts by itself at this time (milliseconds), once there are enough players. */
       startsAt: number | null;
+      /** The arena chosen for the next match. */
+      map: MapId | "random";
       isPublic: boolean;
     }
   | {
       // Sent to each player when a hide phase starts. Other players' positions are never included.
       type: "hide";
+      /** The arena this match is played in. */
+      map: MapId;
       volley: number;
       endsAt: number;
       radius: number;
@@ -76,6 +85,7 @@ export type ServerMessage =
   | {
       // Sent to everyone when the hide phase ends. Positions become public here.
       type: "reveal";
+      map: MapId;
       volley: number;
       fireAt: number;
       radius: number;

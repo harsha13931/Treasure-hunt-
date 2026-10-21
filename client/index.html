@@ -4,152 +4,233 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="description" content="Laser Ring: a hide-and-aim laser duel. Last one standing wins." />
-    <meta name="theme-color" content="#b9cfe6" />
+    <meta name="theme-color" content="#08101c" />
     <title>Laser Ring</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <div id="stage"></div>
+    <div class="scrim" aria-hidden="true"></div>
+
+    <!-- Icons used across the interface. Each is drawn once here and used by name. -->
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true" focusable="false">
+      <defs>
+        <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z" fill="currentColor" stroke="none" /></symbol>
+        <symbol id="i-bot" viewBox="0 0 24 24"><rect x="5" y="8" width="14" height="11" rx="3" /><path d="M12 8V5M9 13h.01M15 13h.01M9.5 16.5h5" /><circle cx="12" cy="4" r="1" /></symbol>
+        <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2" /><path d="M3 20c0-3.5 2.7-6 6-6s6 2.5 6 6" /><circle cx="17" cy="9" r="2.6" /><path d="M17 14c2.6 0 4.5 1.9 4.5 5" /></symbol>
+        <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></symbol>
+        <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.8.4-1.1 1-1.1 1.8M12 17h.01" /></symbol>
+        <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></symbol>
+        <symbol id="i-crown" viewBox="0 0 24 24"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z" /></symbol>
+        <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7" /></symbol>
+        <symbol id="i-skull" viewBox="0 0 24 24"><path d="M12 3C7.6 3 4.5 6 4.5 10c0 2.4 1.2 4 2.5 5v3.5h3V16h4v2.5h3V15c1.3-1 2.5-2.6 2.5-5 0-4-3.1-7-7.5-7z" /><circle cx="9" cy="10.5" r="1.3" fill="currentColor" /><circle cx="15" cy="10.5" r="1.3" fill="currentColor" /></symbol>
+        <symbol id="i-trophy" viewBox="0 0 24 24"><path d="M7 4h10v5a5 5 0 0 1-10 0zM7 6H4v1.5A3 3 0 0 0 7 10.5M17 6h3v1.5a3 3 0 0 1-3 3M12 14v4M8 20h8" /></symbol>
+        <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></symbol>
+        <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V6l10-2v12" /><circle cx="6.5" cy="18" r="2.5" /><circle cx="16.5" cy="16" r="2.5" /></symbol>
+        <symbol id="i-exit" viewBox="0 0 24 24"><path d="M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h5M15 8l4 4-4 4M19 12H9" /></symbol>
+        <symbol id="i-map" viewBox="0 0 24 24"><path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2zM9 4v14M15 6v14" /></symbol>
+        <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></symbol>
+        <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></symbol>
+        <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3L5 13.5h6L10 21l8-10.5h-6z" /></symbol>
+        <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" /><circle cx="12" cy="12" r="3" /></symbol>
+        <symbol id="i-dice" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M8.5 8.5h.01M15.5 8.5h.01M12 12h.01M8.5 15.5h.01M15.5 15.5h.01" /></symbol>
+      </defs>
+    </svg>
 
     <div class="letterbox top" aria-hidden="true"></div>
     <div class="letterbox bottom" aria-hidden="true"></div>
     <p id="skip-hint" class="skip-hint" aria-hidden="true">Tap to skip</p>
 
+    <!-- Shown while the game files load, and while a sleeping server wakes up. -->
+    <div id="loader" class="loader" role="status" aria-live="polite">
+      <div class="loader-mark"><span></span></div>
+      <p id="loader-text" class="loader-text">Loading</p>
+      <div class="loader-bar"><i id="loader-fill"></i></div>
+    </div>
+
     <main id="app">
-      <!-- Start screen: the very first thing the player sees -->
+      <!-- Start screen: the first thing the player sees, after the opening scene -->
       <section id="title" class="screen title-screen">
-        <h1 class="logo">Laser Ring</h1>
+        <p class="kicker">A hide-and-aim laser duel</p>
+        <h1 class="logo">Laser<span>Ring</span></h1>
         <p class="tagline">Hide your spot. Aim in secret. Last one standing wins.</p>
-        <button id="start-game" class="btn primary big start-button">Start Game</button>
+        <button id="start-game" class="cta"><svg class="icon"><use href="#i-play" /></svg><span>Start Game</span></button>
       </section>
 
       <!-- Main menu -->
-      <section id="home" class="panel screen hidden">
-        <h1 class="title">Laser Ring</h1>
-        <p class="tagline">Hide your spot. Aim in secret. Last one standing wins.</p>
+      <section id="home" class="screen menu-screen hidden">
+        <header class="brand">
+          <h1 class="wordmark">Laser<span>Ring</span></h1>
+          <p>Hide. Aim. Survive.</p>
+        </header>
 
-        <label class="field">
-          <span>Your name</span>
-          <input id="name" maxlength="16" autocomplete="nickname" placeholder="Player" />
+        <nav class="menu-list" aria-label="Main menu">
+          <button id="play" class="menu-btn primary">
+            <svg class="icon"><use href="#i-play" /></svg>
+            <span><b>Play Game</b><small>Solo against bots, or online</small></span>
+          </button>
+          <button class="menu-btn" data-go="howto">
+            <svg class="icon"><use href="#i-help" /></svg>
+            <span><b>How to Play</b><small>Learn the rules in a minute</small></span>
+          </button>
+          <button class="menu-btn" data-go="settings">
+            <svg class="icon"><use href="#i-sliders" /></svg>
+            <span><b>Settings</b><small>Sound, music, graphics</small></span>
+          </button>
+        </nav>
+
+        <label class="profile">
+          <span id="avatar" class="avatar" aria-hidden="true">P</span>
+          <span class="profile-text">
+            <small>Your callsign</small>
+            <input id="name" maxlength="16" autocomplete="nickname" placeholder="Player" />
+          </span>
         </label>
-
-        <div class="stack">
-          <button id="play" class="btn primary big">Play Game</button>
-          <button class="btn" data-go="howto">How to play</button>
-          <button class="btn" data-go="settings">Settings</button>
-        </div>
       </section>
 
       <!-- Choose how to play -->
-      <section id="modes" class="panel screen hidden">
-        <h2 class="screen-title">Choose how to play</h2>
-        <div class="stack">
+      <section id="modes" class="screen menu-screen wide hidden">
+        <header class="page-head">
+          <button class="back-btn" data-go="home" aria-label="Back"><svg class="icon"><use href="#i-back" /></svg></button>
+          <h2>Choose your battle</h2>
+        </header>
+        <div class="card-row">
           <button id="mode-solo" class="mode-card">
-            <strong>Solo vs Bots</strong>
-            <span>Jump straight in against computer players. You choose how many.</span>
+            <span class="mode-icon"><svg class="icon"><use href="#i-bot" /></svg></span>
+            <b>Solo vs Bots</b>
+            <span>Jump in against computer players. Pick how many, how tough, and where.</span>
+            <i class="card-go">Play <svg class="icon"><use href="#i-play" /></svg></i>
           </button>
           <button class="mode-card" data-go="online">
-            <strong>Play Online</strong>
-            <span>Play with real people. Quick Match, or invite friends with a code.</span>
+            <span class="mode-icon"><svg class="icon"><use href="#i-users" /></svg></span>
+            <b>Play Online</b>
+            <span>Quick Match with anyone, or make a private room and invite friends with a code.</span>
+            <i class="card-go">Play <svg class="icon"><use href="#i-play" /></svg></i>
           </button>
         </div>
-        <button class="btn ghost back" data-go="home">Back</button>
       </section>
 
       <!-- Solo setup -->
-      <section id="solo" class="panel screen hidden">
-        <h2 class="screen-title">Solo vs Bots</h2>
+      <section id="solo" class="screen menu-screen wide hidden">
+        <header class="page-head">
+          <button class="back-btn" data-go="modes" aria-label="Back"><svg class="icon"><use href="#i-back" /></svg></button>
+          <h2>Solo vs Bots</h2>
+        </header>
 
-        <label class="field">
-          <span>Bots <strong id="solo-bot-count">5</strong></span>
-          <input id="solo-bots" type="range" min="1" max="7" value="5" />
-        </label>
-
-        <div class="field">
-          <span>Difficulty</span>
-          <div id="difficulty" class="segmented" role="group" aria-label="Bot difficulty">
-            <button type="button" data-difficulty="easy">Easy</button>
-            <button type="button" data-difficulty="normal" aria-pressed="true">Normal</button>
-            <button type="button" data-difficulty="hard">Hard</button>
+        <div class="setup-grid">
+          <div class="setup-col">
+            <div class="field">
+              <label class="field-label" for="solo-bots">Opponents <strong id="solo-bot-count">5</strong></label>
+              <div class="bot-row" id="bot-icons" aria-hidden="true"></div>
+              <input id="solo-bots" type="range" min="1" max="7" value="5" />
+            </div>
+            <div class="field">
+              <span class="field-label">Difficulty</span>
+              <div id="difficulty" class="segmented" role="group" aria-label="Bot difficulty">
+                <button type="button" data-difficulty="easy">Easy</button>
+                <button type="button" data-difficulty="normal" aria-pressed="true">Normal</button>
+                <button type="button" data-difficulty="hard">Hard</button>
+              </div>
+            </div>
+          </div>
+          <div class="setup-col">
+            <span class="field-label">Arena</span>
+            <div id="solo-maps" class="map-grid" role="radiogroup" aria-label="Arena"></div>
           </div>
         </div>
 
-        <div class="row">
-          <button id="solo-start" class="btn primary">Start match</button>
-          <button class="btn ghost" data-go="modes">Back</button>
-        </div>
+        <footer class="actions">
+          <button id="solo-start" class="cta"><svg class="icon"><use href="#i-play" /></svg><span>Start Match</span></button>
+        </footer>
         <p id="solo-error" class="error" role="alert"></p>
       </section>
 
       <!-- Online options -->
-      <section id="online" class="panel screen hidden">
-        <h2 class="screen-title">Play Online</h2>
-        <div class="stack">
+      <section id="online" class="screen menu-screen wide hidden">
+        <header class="page-head">
+          <button class="back-btn" data-go="modes" aria-label="Back"><svg class="icon"><use href="#i-back" /></svg></button>
+          <h2>Play Online</h2>
+        </header>
+        <div class="card-row">
           <button id="quick" class="mode-card">
-            <strong>Quick Match</strong>
-            <span>Join a public match. It starts a few seconds after a second player arrives.</span>
+            <span class="mode-icon"><svg class="icon"><use href="#i-bolt" /></svg></span>
+            <b>Quick Match</b>
+            <span>Join a public match. It starts a few seconds after a second player arrives, in a random arena.</span>
+            <i class="card-go">Find a match <svg class="icon"><use href="#i-play" /></svg></i>
           </button>
           <button id="create" class="mode-card">
-            <strong>Private room</strong>
-            <span>Make a room and share its code with friends.</span>
+            <span class="mode-icon"><svg class="icon"><use href="#i-lock" /></svg></span>
+            <b>Private Room</b>
+            <span>Make a room, choose the arena and bots, and share the code with your friends.</span>
+            <i class="card-go">Create room <svg class="icon"><use href="#i-play" /></svg></i>
           </button>
         </div>
-
-        <div class="divider"><span>or join with a code</span></div>
-
-        <div class="row">
+        <div class="join-bar">
+          <span>Have a code?</span>
           <input id="code" maxlength="5" placeholder="ROOM CODE" autocomplete="off" class="code-input" />
           <button id="join" class="btn">Join</button>
         </div>
         <p id="menu-error" class="error" role="alert"></p>
-        <button class="btn ghost back" data-go="modes">Back</button>
       </section>
 
       <!-- Lobby -->
-      <section id="lobby" class="panel screen hidden">
-        <p id="lobby-kind" class="eyebrow">Private room</p>
-        <button id="room-code" class="room-code" title="Copy room code"></button>
-        <p id="lobby-hint" class="hint"></p>
+      <section id="lobby" class="screen menu-screen wide hidden">
+        <header class="page-head">
+          <div>
+            <p id="lobby-kind" class="eyebrow">Private room</p>
+            <button id="room-code" class="room-code" title="Copy room code"></button>
+          </div>
+          <p id="lobby-hint" class="hint"></p>
+        </header>
+        <p id="lobby-timer" class="countdown-note hidden"></p>
 
-        <p id="lobby-timer" class="result hidden"></p>
-
-        <h2 class="section-title">Players <span id="player-count"></span></h2>
-        <ul id="player-list" class="player-list"></ul>
-
-        <label id="bots-row" class="field hidden">
-          <span>Add bots <strong id="lobby-bot-count">0</strong></span>
-          <input id="lobby-bots" type="range" min="0" max="7" value="0" />
-        </label>
-
-        <div class="row">
-          <button id="start" class="btn primary">Start match</button>
-          <button id="leave" class="btn ghost">Leave</button>
+        <div class="setup-grid">
+          <div class="setup-col">
+            <span class="field-label">Players <strong id="player-count"></strong></span>
+            <ul id="player-list" class="slots"></ul>
+          </div>
+          <div class="setup-col">
+            <span class="field-label">Arena</span>
+            <div id="lobby-maps" class="map-grid compact" role="radiogroup" aria-label="Arena"></div>
+            <div id="bots-row" class="field hidden">
+              <label class="field-label" for="lobby-bots">Add bots <strong id="lobby-bot-count">0</strong></label>
+              <input id="lobby-bots" type="range" min="0" max="7" value="0" />
+            </div>
+          </div>
         </div>
-        <p id="lobby-note" class="hint"></p>
+
+        <footer class="actions">
+          <button id="leave" class="btn ghost">Leave</button>
+          <button id="start" class="cta"><svg class="icon"><use href="#i-play" /></svg><span>Start Match</span></button>
+        </footer>
+        <p id="lobby-note" class="hint centered"></p>
       </section>
 
       <!-- Results -->
-      <section id="results" class="panel screen hidden">
-        <p class="eyebrow">Match over</p>
+      <section id="results" class="screen results-screen hidden">
+        <p id="result-kicker" class="kicker">Match over</p>
         <h2 id="result-title" class="result-title"></h2>
         <ol id="ranking" class="ranking"></ol>
-        <div class="row">
-          <button id="again" class="btn primary">Play again</button>
+        <div class="actions">
           <button id="to-menu" class="btn ghost">Main menu</button>
+          <button id="again" class="cta"><svg class="icon"><use href="#i-play" /></svg><span>Play again</span></button>
         </div>
       </section>
 
       <!-- How to play -->
-      <section id="howto" class="panel screen hidden">
-        <h2 class="screen-title">How to play</h2>
+      <section id="howto" class="screen menu-screen wide hidden">
+        <header class="page-head">
+          <button class="back-btn" data-go="home" aria-label="Back"><svg class="icon"><use href="#i-back" /></svg></button>
+          <h2>How to play</h2>
+        </header>
         <ol class="steps">
-          <li><strong>Hide.</strong> Walk anywhere inside the cage and turn to aim. Nobody can see where you are.</li>
-          <li><strong>Lock in.</strong> Stand still when you are happy with your spot and aim.</li>
-          <li><strong>Reveal.</strong> Everyone appears at once, and a short countdown begins.</li>
-          <li><strong>Fire.</strong> All the lasers fire together. Anyone a beam touches is out.</li>
-          <li><strong>The floor breaks.</strong> Every few rounds the outer ice cracks and falls, and the cage closes in.</li>
-          <li><strong>Win.</strong> The last one standing wins.</li>
+          <li><span class="step-icon"><svg class="icon"><use href="#i-eye" /></svg></span><div><b>Hide</b><p>Walk anywhere in the ring and turn to aim. Nobody can see where you are.</p></div></li>
+          <li><span class="step-icon"><svg class="icon"><use href="#i-lock" /></svg></span><div><b>Lock in</b><p>Stand still when you like your spot and your aim.</p></div></li>
+          <li><span class="step-icon"><svg class="icon"><use href="#i-target" /></svg></span><div><b>Reveal and fire</b><p>Everyone appears at once. Then all lasers fire together. Anyone a beam touches is out.</p></div></li>
+          <li><span class="step-icon"><svg class="icon"><use href="#i-skull" /></svg></span><div><b>The floor breaks</b><p>The outer ice, boards or stone falls away, and the ring closes in. Stand near the edge and you fall.</p></div></li>
+          <li><span class="step-icon"><svg class="icon"><use href="#i-trophy" /></svg></span><div><b>Win</b><p>The last player standing wins the match.</p></div></li>
         </ol>
         <table class="keys">
           <tr><th></th><th>Computer</th><th>Phone</th></tr>
@@ -157,57 +238,73 @@
           <tr><td>Turn and aim</td><td>Mouse, or Q E</td><td>Right stick or ◀ ▶</td></tr>
           <tr><td>Lock in</td><td>Space</td><td>Lock in button</td></tr>
         </table>
-        <button class="btn ghost back" data-go="home">Back</button>
       </section>
 
       <!-- Settings -->
-      <section id="settings" class="panel screen hidden">
-        <h2 class="screen-title">Settings</h2>
-        <label class="check">
-          <input id="set-music" type="checkbox" />
-          <span>Music</span>
-        </label>
-        <label class="field">
-          <span>Sound volume <strong id="volume-label">80%</strong></span>
-          <input id="set-volume" type="range" min="0" max="100" value="80" />
-        </label>
-        <div class="field">
-          <span>Graphics</span>
-          <div id="quality" class="segmented" role="group" aria-label="Graphics quality">
-            <button type="button" data-quality="auto" aria-pressed="true">Auto</button>
-            <button type="button" data-quality="low">Low</button>
-            <button type="button" data-quality="high">High</button>
+      <section id="settings" class="screen menu-screen hidden">
+        <header class="page-head">
+          <button class="back-btn" data-go="home" aria-label="Back"><svg class="icon"><use href="#i-back" /></svg></button>
+          <h2>Settings</h2>
+        </header>
+        <div class="settings-list">
+          <label class="switch">
+            <span><b>Music</b><small>The soundtrack</small></span>
+            <input id="set-music" type="checkbox" /><i></i>
+          </label>
+          <label class="switch">
+            <span><b>Announcer voice</b><small>Calls out eliminations</small></span>
+            <input id="set-voice" type="checkbox" checked /><i></i>
+          </label>
+          <label class="switch">
+            <span><b>Camera shake</b><small>Rumble when lasers fire</small></span>
+            <input id="set-shake" type="checkbox" checked /><i></i>
+          </label>
+          <label class="field">
+            <span class="field-label">Sound volume <strong id="volume-label">80%</strong></span>
+            <input id="set-volume" type="range" min="0" max="100" value="80" />
+          </label>
+          <div class="field">
+            <span class="field-label">Graphics</span>
+            <div id="quality" class="segmented" role="group" aria-label="Graphics quality">
+              <button type="button" data-quality="auto" aria-pressed="true">Auto</button>
+              <button type="button" data-quality="low">Low</button>
+              <button type="button" data-quality="high">High</button>
+            </div>
           </div>
         </div>
-        <label class="check">
-          <input id="set-voice" type="checkbox" checked />
-          <span>Voice announcements</span>
-        </label>
-        <label class="check">
-          <input id="set-shake" type="checkbox" checked />
-          <span>Camera shake</span>
-        </label>
-        <button class="btn ghost back" data-go="home">Back</button>
       </section>
 
       <!-- In-match HUD -->
       <section id="game" class="screen hidden">
-        <canvas id="minimap" width="220" height="220" aria-label="Map of the ring"></canvas>
-        <div class="stats">
-          <div class="stat"><span id="alive-count">0</span> alive</div>
-          <div class="stat">Ring <span id="ring-radius">--</span> m</div>
-        </div>
+        <!-- Left: who is playing, in which color, and who is out -->
+        <aside class="hud-left">
+          <div class="roster-card">
+            <header><span>Players</span><b><span id="alive-count">0</span> alive</b></header>
+            <ul id="roster" class="roster"></ul>
+          </div>
+          <div class="radar-card">
+            <canvas id="minimap" width="220" height="220" aria-label="Map of the ring"></canvas>
+            <p>Ring <b><span id="ring-radius">--</span> m</b></p>
+          </div>
+        </aside>
 
-        <div class="top-center">
+        <!-- Top middle: what is happening, and how long is left -->
+        <div class="hud-top">
           <p id="phase" class="phase"></p>
-          <p id="timer" class="timer">--</p>
+          <div class="timer-ring" aria-live="off">
+            <svg viewBox="0 0 64 64" aria-hidden="true">
+              <circle class="track" cx="32" cy="32" r="28" />
+              <circle id="timer-arc" class="arc" cx="32" cy="32" r="28" />
+            </svg>
+            <span id="timer" class="timer">--</span>
+          </div>
         </div>
 
         <ul id="killfeed" class="killfeed" aria-live="polite"></ul>
 
-        <div id="controls" class="panel controls hidden">
+        <div id="controls" class="controls hidden">
           <p id="controls-hint" class="hint"></p>
-          <button id="lock" class="btn primary">Lock in</button>
+          <button id="lock" class="cta lock-btn"><svg class="icon"><use href="#i-lock" /></svg><span>Lock in</span></button>
         </div>
 
         <!-- Phone controls. The joysticks float to wherever a thumb lands, and the buttons stay in the corners. -->
@@ -237,8 +334,10 @@
       </section>
 
       <div id="rotate" class="rotate"><p>Turn your phone sideways to play</p></div>
-      <button id="music-toggle" class="chip-button" aria-pressed="false">Music off</button>
-      <button id="leave-game" class="chip-button leave-chip hidden">Leave match</button>
+      <div class="top-chips">
+        <button id="music-toggle" class="chip-button" aria-pressed="false"><svg class="icon"><use href="#i-music" /></svg><span>Music off</span></button>
+        <button id="leave-game" class="chip-button leave-chip hidden"><svg class="icon"><use href="#i-exit" /></svg><span>Leave</span></button>
+      </div>
       <div id="countdown" class="countdown hidden" aria-live="assertive"></div>
       <div id="banner" class="banner" role="status" aria-live="polite"></div>
       <div id="toast" class="toast hidden" role="alert"></div>

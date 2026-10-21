@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
-import { createReadStream, existsSync, statSync } from "node:fs";
-import { createServer } from "node:http";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
+import { brotliCompressSync, gzipSync, constants as zlib } from "node:zlib";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -51,6 +52,59 @@ function openRoom(isPublic: boolean): Room {
   return room;
 }
 
+/** File types worth compressing. Music, images and fonts are already compressed. */
+const COMPRESSIBLE = new Set([".html", ".js", ".css", ".json", ".svg", ".glb"]);
+/** Compressed copies are made once and kept, since the files only change when the game is rebuilt. */
+const compressed = new Map<string, Buffer>();
+
+function cacheControl(filePath: string): string {
+  if (filePath.includes("/assets/")) return "public, max-age=31536000, immutable";
+  // The music, voice clips and model are large and rarely change, so browsers may keep them for a day.
+  if (filePath.includes("/music/") || filePath.includes("/models/") || filePath.includes("/voice/")) return "public, max-age=86400";
+  return "no-cache";
+}
+
+/**
+ * Sends one file from the built client. Files that compress well are sent compressed, and a browser that already
+ * has the current copy is told so instead of being sent it again. Both matter on a small free server and a phone connection.
+ */
+function serveFile(req: IncomingMessage, res: ServerResponse, filePath: string): void {
+  const stats = statSync(filePath);
+  const extension = extname(filePath);
+  const etag = `W/"${stats.size.toString(16)}-${Math.floor(stats.mtimeMs).toString(16)}"`;
+  const headers: Record<string, string> = {
+    "content-type": MIME[extension] ?? "application/octet-stream",
+    "cache-control": cacheControl(filePath),
+    etag,
+    vary: "Accept-Encoding",
+  };
+
+  if (req.headers["if-none-match"] === etag) {
+    res.writeHead(304, headers).end();
+    return;
+  }
+
+  const accepted = String(req.headers["accept-encoding"] ?? "");
+  const encoding = !COMPRESSIBLE.has(extension) ? null : /\bbr\b/.test(accepted) ? "br" : /\bgzip\b/.test(accepted) ? "gzip" : null;
+  if (encoding) {
+    const key = `${filePath}:${etag}:${encoding}`;
+    let body = compressed.get(key);
+    if (!body) {
+      const raw = readFileSync(filePath);
+      body =
+        encoding === "br"
+          ? brotliCompressSync(raw, { params: { [zlib.BROTLI_PARAM_QUALITY]: 9 } })
+          : gzipSync(raw, { level: 9 });
+      compressed.set(key, body);
+    }
+    res.writeHead(200, { ...headers, "content-encoding": encoding, "content-length": String(body.length) }).end(body);
+    return;
+  }
+
+  res.writeHead(200, { ...headers, "content-length": String(stats.size) });
+  createReadStream(filePath).pipe(res);
+}
+
 const http = createServer((req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
 
@@ -75,21 +129,28 @@ const http = createServer((req, res) => {
     filePath = join(CLIENT_DIR, "index.html");
   }
 
-  res.writeHead(200, {
-    "content-type": MIME[extname(filePath)] ?? "application/octet-stream",
-    "cache-control": filePath.includes("/assets/")
-      ? "public, max-age=31536000, immutable"
-      : // The music and the model are large and rarely change, so browsers may keep them for a day.
-        filePath.includes("/music/") || filePath.includes("/models/")
-        ? "public, max-age=86400"
-        : "no-cache",
-  });
-  createReadStream(filePath).pipe(res);
+  serveFile(req, res, filePath);
 });
 
 const wss = new WebSocketServer({ server: http, path: "/ws", maxPayload: 4096 });
 
+// Ping every connection now and then. It keeps idle connections open through the hosting proxy, and finds the ones
+// whose phone has gone away without saying goodbye, so their seats are not held forever.
+const answered = new WeakMap<WebSocket, boolean>();
+setInterval(() => {
+  for (const client of wss.clients) {
+    if (answered.get(client) === false) {
+      client.terminate();
+      continue;
+    }
+    answered.set(client, false);
+    client.ping();
+  }
+}, 25_000).unref();
+
 wss.on("connection", (socket: WebSocket) => {
+  answered.set(socket, true);
+  socket.on("pong", () => answered.set(socket, true));
   let room: Room | null = null;
   let playerId: string | null = null;
   let windowStart = Date.now();

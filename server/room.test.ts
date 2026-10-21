@@ -436,6 +436,47 @@ describe("Room", () => {
     for (const ring of rings) expect(ring.radius).toBeLessThan(START_RING_RADIUS);
   });
 
+  describe("arenas", () => {
+    it("starts in the arena the host picked, and tells everyone", () => {
+      const room = new Room("MAPS1");
+      const a = connect(room, "Ann");
+      const b = connect(room, "Ben");
+      room.handle(a.id, { type: "map", map: "forest" });
+      expect(lastOf(b, "lobby")?.map).toBe("forest");
+      room.handle(a.id, { type: "start" });
+      expect(lastOf(a, "hide")?.map).toBe("forest");
+      expect(lastOf(b, "hide")?.map).toBe("forest");
+    });
+
+    it("lets the start message choose the arena directly", () => {
+      const room = new Room("MAPS2");
+      const a = connect(room, "Ann");
+      room.handle(a.id, { type: "start", bots: 2, map: "bridge" });
+      expect(lastOf(a, "hide")?.map).toBe("bridge");
+    });
+
+    it("only lets the host choose, and only a real arena", () => {
+      const room = new Room("MAPS3");
+      const a = connect(room, "Ann");
+      const b = connect(room, "Ben");
+      room.handle(b.id, { type: "map", map: "forest" });
+      expect(lastOf(b, "error")?.message).toBe("Only the host can choose the arena.");
+      room.handle(a.id, { type: "map", map: "moon" as never });
+      expect(lastOf(a, "error")?.message).toBe("Unknown arena.");
+    });
+
+    it("picks a real arena for a random choice, and for public rooms", () => {
+      const room = new Room("MAPS4");
+      const a = connect(room, "Ann");
+      room.handle(a.id, { type: "start", bots: 1, map: "random" });
+      expect(["frost", "forest", "bridge"]).toContain(lastOf(a, "hide")?.map);
+
+      const open = new Room("MAPS5", { isPublic: true });
+      const c = connect(open, "Cy");
+      expect(lastOf(c, "lobby")?.map).toBe("random");
+    });
+  });
+
   it("says who was knocked out and by whom", () => {
     const room = roomWith([
       { x: -5, z: 0, yaw: FACE_EAST },

@@ -23,6 +23,8 @@ A match needs **at least 2 players in total**, bots included, and holds up to 8.
 ## Features
 
 - **Snow world:** an open snowfield with mountains and pine trees, snow falling from above, and the arena as a circle of ice over a deep crevasse.
+- **Three arenas:** Frozen Crevasse (snow and ice), Emerald Forest (stone clearing, wooden palisade, fireflies and falling leaves) and Canyon Crossing (a rope-hung deck over a canyon at sunset). The host picks one in the lobby, solo players pick it before the match, and Quick Match picks one at random. They play the same; each has its own scenery, light, floor, fence and mood. The code for each is in `client/src/maps`.
+- **Interface:** a consistent design (Oxanium and Inter fonts, angled buttons, cyan and orange accents), a loading screen, arena cards with artwork, a lobby with a slot for every seat, and a result screen with a podium. A **players panel** on the left of the match shows each player's name in their own color, who you are, and, with a short animation, who has just been knocked out and by whom. Name tags above players are large and drawn on top of everything.
 - **The floor is deadly:** when the outer ice breaks, anyone standing on it falls into the crevasse and is out. There is no warning, so players have to judge for themselves when to stay toward the middle. Once the ring reaches its smallest size (the last circle) nothing more breaks, and the game says "Final circle" instead of announcing a collapse that is not happening.
 - **Spectating:** once you are out, follow any player still alive from behind, and switch with the ◀ ▶ buttons or Q and E. Positions stay secret during the hide phase, so you can follow a player once they are revealed.
 - **Reconnecting:** if the connection drops during a match, the player's spot is held for 45 seconds. They stand still, locked in, and the browser rejoins by itself (also after a page reload). A secret token stops anyone else taking the seat.
@@ -78,6 +80,12 @@ npm start       # serves the client and the WebSocket server on $PORT (default 8
 ```
 
 Then open `http://localhost:8080`.
+
+## Running well on Render's free plan
+
+- Text files (the game's code, page and model) are sent compressed (Brotli or gzip), about a quarter of their size, and browsers reuse their copies instead of downloading again.
+- A free service goes to sleep after about 15 minutes without a visit, and the next visit waits up to a minute for it to wake. The game shows "Waking up the server" and retries by itself. To stop it sleeping, make a free monitor at https://uptimerobot.com that requests `https://your-service.onrender.com/healthz` every 5 minutes.
+- Rooms live in memory, so keep the service at one instance, and a restart ends running matches. Players who lose connection can rejoin for 45 seconds.
 
 ## Host it on Render
 

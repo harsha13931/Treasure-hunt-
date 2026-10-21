@@ -120,8 +120,8 @@ export class Stickman {
     });
 
     if (name) {
-      this.label = makeLabel(name);
-      this.label.position.set(0, PLAYER_HEIGHT + 0.55, 0);
+      this.label = makeLabel(name, color);
+      this.label.position.set(0, PLAYER_HEIGHT + 1.0, 0);
       this.root.add(this.label);
     }
   }
@@ -295,25 +295,58 @@ function joint(radius: number, at: THREE.Vector3, material: THREE.Material): THR
   return mesh;
 }
 
-/** A name that always faces the camera, drawn on a transparent canvas. */
-export function makeLabel(text: string): THREE.Sprite {
+/**
+ * A name tag that always faces the camera: a dark pill with a dot in the player's color and the name in large,
+ * bold letters. It is drawn on top of everything, so a cage bar or another player never hides it.
+ */
+export function makeLabel(text: string, color: string): THREE.Sprite {
   const canvas = document.createElement("canvas");
-  canvas.width = 512;
-  canvas.height = 128;
+  canvas.width = 768;
+  canvas.height = 192;
   const ctx = canvas.getContext("2d")!;
-  ctx.font = "600 64px system-ui, sans-serif";
-  ctx.textAlign = "center";
+  const label = text.length > 14 ? `${text.slice(0, 13)}…` : text;
+  ctx.font = "800 84px Oxanium, system-ui, sans-serif";
+  const textWidth = ctx.measureText(label).width;
+  const pillWidth = Math.min(740, textWidth + 130);
+  const x = (768 - pillWidth) / 2;
+
+  // The pill.
+  ctx.fillStyle = "rgba(6, 11, 22, 0.86)";
+  roundRect(ctx, x, 24, pillWidth, 144, 72);
+  ctx.fill();
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = color;
+  ctx.stroke();
+
+  // The color dot, then the name.
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x + 62, 96, 26, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = "rgba(255,255,255,0.9)";
+  ctx.stroke();
   ctx.textBaseline = "middle";
-  ctx.lineWidth = 10;
-  ctx.strokeStyle = "rgba(0,0,0,0.75)";
-  ctx.strokeText(text, 256, 64);
-  ctx.fillStyle = "#f4f1ea";
-  ctx.fillText(text, 256, 64);
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText(label, x + 104, 100);
+
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false }));
-  sprite.scale.set(2.6, 0.65, 1);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false }));
+  sprite.scale.set(5.6, 1.4, 1);
+  sprite.renderOrder = 10;
   return sprite;
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 }
 
 /** A laser pistol built from simple parts. Origin is the grip, and the barrel points along +Z. */

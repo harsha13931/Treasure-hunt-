@@ -1,4 +1,5 @@
-import { MIN_RING_RADIUS, PLAYER_COLORS, ROOM_CODE_LENGTH, ROOM_SIZE, START_RING_RADIUS, TICK_MS, type BotDifficulty } from "../../shared/config.js";
+import { HIDE_MS, MIN_RING_RADIUS, PLAYER_COLORS, REVEAL_MS, ROOM_CODE_LENGTH, ROOM_SIZE, START_RING_RADIUS, TICK_MS, type BotDifficulty } from "../../shared/config.js";
+import { DEFAULT_MAP, isMapId } from "../../shared/maps.js";
 import type { Beam, Kill } from "../../shared/geometry.js";
 import { facing, stepPose, type MoveInput, type Pose } from "../../shared/movement.js";
 import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../../shared/protocol.js";
@@ -6,6 +7,7 @@ import { Audio } from "./audio.js";
 import { assignColors, colorFor } from "./stickman.js";
 import type { VoicePart } from "./audio.js";
 import { haptic } from "./haptics.js";
+import { renderMapPicker, type MapChoice } from "./mapart.js";
 import { FloatingJoystick, HoldButton } from "./touch.js";
 import { loadRobot } from "./robot.js";
 import { World } from "./world.js";
@@ -50,6 +52,7 @@ interface Me {
 interface SoloSettings {
   bots: number;
   difficulty: BotDifficulty;
+  map: MapChoice;
 }
 
 interface Settings {
@@ -58,6 +61,8 @@ interface Settings {
   shake: boolean;
   voice: boolean;
   quality: "auto" | "low" | "high";
+  /** The arena picked last time, used for solo matches and as the lobby default. */
+  map: MapChoice;
 }
 
 const state = {
@@ -95,6 +100,8 @@ const state = {
   /** The last solo setup, so Play Again can repeat it. */
   lastSolo: null as SoloSettings | null,
   showResults: false,
+  /** The arena the host chose, as the lobby last said. */
+  lobbyMap: DEFAULT_MAP as MapChoice,
   /** The player an eliminated spectator is watching. */
   spectateId: null as string | null,
 };
@@ -173,6 +180,19 @@ const ui = {
   countdown: byId("countdown"),
   banner: byId("banner"),
   feed: byId("killfeed"),
+  roster: byId<HTMLUListElement>("roster"),
+  lockLabel: document.querySelector("#lock span") as HTMLElement,
+  musicLabel: document.querySelector("#music-toggle span") as HTMLElement,
+  timerArc: document.getElementById("timer-arc") as unknown as SVGCircleElement,
+  timerRing: document.querySelector(".timer-ring") as HTMLElement,
+  soloMaps: byId("solo-maps"),
+  lobbyMaps: byId("lobby-maps"),
+  botIcons: byId("bot-icons"),
+  avatar: byId("avatar"),
+  loader: byId("loader"),
+  loaderText: byId("loader-text"),
+  loaderFill: byId("loader-fill"),
+  resultKicker: byId("result-kicker"),
   toast: byId("toast"),
 };
 
@@ -190,23 +210,36 @@ document.body.classList.toggle("touch", isTouchDevice);
 
 ui.name.value = readSavedName();
 applySettings();
-// The title scene uses the robot, so wait for the model (a fraction of a second) before drawing it.
-void loadRobot().then(() => {
+// Load the fonts and the robot first, with a loading bar, then show the title and play the opening scene.
+void (async () => {
+  setLoader("Loading", 0.15);
+  // The fonts are loaded up front, so the first name tags and the menus never appear in a stand-in font.
+  await Promise.race([
+    Promise.all([document.fonts.load("800 84px Oxanium"), document.fonts.load("700 16px Oxanium"), document.fonts.load("500 16px Inter")]),
+    new Promise((done) => window.setTimeout(done, 2500)),
+  ]);
+  setLoader("Loading", 0.45);
+  await loadRobot();
+  setLoader("Ready", 1);
   showScreen("title");
   // The opening scene plays once, when the game opens. It is skipped when coming straight back into a match.
   const params = new URLSearchParams(location.search);
-  if (params.has("nointro") || loadSession()) {
+  const skipIntro = params.has("nointro") || loadSession() !== null;
+  if (skipIntro) {
     revealTitle();
-    return;
+  } else {
+    document.body.classList.add("intro");
+    world.playIntro(revealTitle);
+    const skip = (): void => world.skipIntro();
+    window.addEventListener("pointerdown", skip, { once: true });
+    window.addEventListener("keydown", skip, { once: true });
+    introSkipListener = skip;
   }
-  document.body.classList.add("intro");
-  world.playIntro(revealTitle);
-  const skip = (): void => world.skipIntro();
-  window.addEventListener("pointerdown", skip, { once: true });
-  window.addEventListener("keydown", skip, { once: true });
-  introSkipListener = skip;
-});
+  hideLoader();
+})();
 if (new URLSearchParams(location.search).has("perf")) startPerfOverlay();
+// A handle for testing from the browser console. Only present when the address has ?debug.
+if (new URLSearchParams(location.search).has("debug")) (window as unknown as { __world: World }).__world = world;
 
 // The world asks for sounds, and the page plays them.
 world.onSound = (sound) => {
@@ -249,9 +282,41 @@ ui.play.addEventListener("click", () => {
 
 ui.modeSolo.addEventListener("click", () => showScreen("solo"));
 
-ui.soloBots.addEventListener("input", () => {
-  ui.soloBotCount.textContent = ui.soloBots.value;
+function renderBotIcons(): void {
+  const count = Number(ui.soloBots.value);
+  ui.soloBotCount.textContent = String(count);
+  ui.botIcons.replaceChildren(
+    ...Array.from({ length: count }, (_, index) => {
+      const chip = document.createElement("span");
+      chip.style.background = PLAYER_COLORS[(index + 1) % PLAYER_COLORS.length];
+      chip.style.animationDelay = `${index * 30}ms`;
+      chip.innerHTML = '<svg class="icon"><use href="#i-bot" /></svg>';
+      return chip;
+    }),
+  );
+}
+ui.soloBots.addEventListener("input", renderBotIcons);
+renderBotIcons();
+
+/** The arena for a solo match. `?map=forest` in the address overrides it, which is handy for testing. */
+function soloMap(): MapChoice {
+  const forced = new URLSearchParams(location.search).get("map");
+  return forced === "random" || isMapId(forced) ? forced : settings.map;
+}
+
+function renderSoloMaps(): void {
+  renderMapPicker(ui.soloMaps, soloMap(), (choice) => {
+    settings.map = choice;
+    saveSettings();
+    renderSoloMaps();
+  });
+}
+renderSoloMaps();
+
+ui.name.addEventListener("input", () => {
+  ui.avatar.textContent = (ui.name.value.trim()[0] ?? "P").toUpperCase();
 });
+ui.avatar.textContent = (ui.name.value.trim()[0] ?? "P").toUpperCase();
 
 ui.difficulty.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
   button.addEventListener("click", () => {
@@ -262,7 +327,7 @@ ui.difficulty.querySelectorAll<HTMLButtonElement>("button").forEach((button) => 
 
 ui.soloStart.addEventListener("click", () => {
   ui.soloError.textContent = "";
-  const solo: SoloSettings = { bots: Number(ui.soloBots.value), difficulty };
+  const solo: SoloSettings = { bots: Number(ui.soloBots.value), difficulty, map: soloMap() };
   state.pendingStart = solo;
   state.lastSolo = solo;
   enterLandscape();
@@ -330,7 +395,7 @@ ui.again.addEventListener("click", () => {
   state.showResults = false;
   if (state.lastSolo) {
     // Solo: run the same match again straight away.
-    send({ type: "start", bots: state.lastSolo.bots, difficulty: state.lastSolo.difficulty });
+    send({ type: "start", bots: state.lastSolo.bots, difficulty: state.lastSolo.difficulty, map: state.lastSolo.map });
   } else {
     showScreen("lobby");
   }
@@ -412,7 +477,21 @@ requestAnimationFrame(loop);
 
 // ---------- Networking ----------
 
-function connect(then: (socket: WebSocket) => void, onFail?: (message: string) => void): void {
+/** Shows the loading screen with a message and a bar. */
+function setLoader(text: string, progress: number): void {
+  ui.loader.classList.remove("done");
+  ui.loaderText.textContent = text;
+  ui.loaderFill.style.width = `${Math.round(progress * 100)}%`;
+}
+
+function hideLoader(): void {
+  ui.loader.classList.add("done");
+}
+
+/** How many times to try again when the server does not answer, which is what a sleeping free-plan server does. */
+const WAKE_ATTEMPTS = 8;
+
+function connect(then: (socket: WebSocket) => void, onFail?: (message: string) => void, attempt = 0): void {
   if (state.socket?.readyState === WebSocket.OPEN) {
     then(state.socket);
     return;
@@ -422,7 +501,17 @@ function connect(then: (socket: WebSocket) => void, onFail?: (message: string) =
   state.socket = socket;
   state.leaving = false;
 
-  socket.addEventListener("open", () => then(socket));
+  let opened = false;
+  // A server that has gone to sleep takes up to a minute to wake. Say so, instead of looking frozen.
+  const slow = window.setTimeout(() => {
+    if (!opened && attempt < WAKE_ATTEMPTS) setLoader("Waking up the server. This can take up to a minute.", 0.1 + 0.1 * attempt);
+  }, 3000);
+  socket.addEventListener("open", () => {
+    opened = true;
+    window.clearTimeout(slow);
+    hideLoader();
+    then(socket);
+  });
   socket.addEventListener("message", (event) => {
     let message: ServerMessage;
     try {
@@ -433,7 +522,7 @@ function connect(then: (socket: WebSocket) => void, onFail?: (message: string) =
     handle(message);
   });
   socket.addEventListener("close", () => {
-    if (state.leaving || state.socket !== socket) return;
+    if (!opened || state.leaving || state.socket !== socket) return;
     if (reconnecting) {
       retryRejoin();
       return;
@@ -450,6 +539,16 @@ function connect(then: (socket: WebSocket) => void, onFail?: (message: string) =
     resetToHome();
   });
   socket.addEventListener("error", () => {
+    if (opened) return;
+    window.clearTimeout(slow);
+    if (state.socket === socket && !state.leaving && attempt < WAKE_ATTEMPTS) {
+      setLoader("Waking up the server. This can take up to a minute.", 0.1 + 0.1 * attempt);
+      window.setTimeout(() => {
+        if (state.socket === socket) connect(then, onFail, attempt + 1);
+      }, 4000);
+      return;
+    }
+    hideLoader();
     const message = "Could not reach the server.";
     if (onFail) onFail(message);
     else ui.menuError.textContent = message;
@@ -504,6 +603,7 @@ function retryRejoin(delay = RECONNECT_DELAY_MS): void {
     connect(
       (socket) => send({ type: "rejoin", ...session }, socket),
       () => {},
+      WAKE_ATTEMPTS,
     );
   }, delay);
 }
@@ -559,6 +659,7 @@ function handle(message: ServerMessage): void {
       assignColors(message.players);
       state.startsAt = message.startsAt;
       state.isPublic = message.isPublic;
+      state.lobbyMap = message.map;
       onLobby();
       break;
 
@@ -599,7 +700,7 @@ function onLobby(): void {
     if (state.pendingStart && state.phase === "LOBBY") {
       const solo = state.pendingStart;
       state.pendingStart = null;
-      send({ type: "start", bots: solo.bots, difficulty: solo.difficulty });
+      send({ type: "start", bots: solo.bots, difficulty: solo.difficulty, map: solo.map });
       return;
     }
     if (state.showResults) {
@@ -620,6 +721,7 @@ function onHide(message: Extract<ServerMessage, { type: "hide" }>): void {
   showScreen("game");
   state.phase = "HIDE";
   audio.setIntensity(0.45);
+  if (message.volley === 1) outReasons.clear();
   state.showResults = false;
   state.volley = message.volley;
   state.endsAt = message.endsAt;
@@ -628,6 +730,7 @@ function onHide(message: Extract<ServerMessage, { type: "hide" }>): void {
   assignColors(message.players);
   void audio.prepareVoice(message.players.map((p) => p.name));
   state.revealed = [];
+  world.setMap(message.map);
   world.setRing(message.radius, false);
   world.clearBeams();
 
@@ -684,6 +787,7 @@ function onReveal(message: Extract<ServerMessage, { type: "reveal" }>): void {
   state.radius = message.radius;
   state.revealed = message.players;
   lastCountdown = 0;
+  world.setMap(message.map);
   world.setRing(message.radius, false);
   if (state.me) {
     state.me.locked = true;
@@ -720,7 +824,9 @@ function onFire(beams: Beam[], eliminated: string[], kills: Kill[]): void {
   // Announce every knock-out by name: who went down, and whose laser did it.
   for (const kill of kills) {
     addFeed(kill.victim, `was eliminated by`, kill.killers);
+    outReasons.set(kill.victim, `Shot by ${kill.killers.map((id) => nameOf(id)).join(" and ")}`);
   }
+  renderRoster();
   // The shot that ends the match gets a moment of slow motion.
   if (kills.length > 0 && state.players.filter((p) => p.alive).length <= 1) world.slowMotion(1.8);
   if (kills.length > 0) {
@@ -783,7 +889,9 @@ function onFallen(fallen: string[], floorBroke: boolean): void {
     const player = state.players.find((p) => p.id === id);
     if (player) player.alive = false;
     addFeed(id, "fell into the crevasse", []);
+    outReasons.set(id, "Fell off the edge");
   }
+  renderRoster();
   world.plunge(fallen);
   for (const id of fallen.slice(0, 3)) {
     void audio.announce(id === state.playerId ? [{ phrase: "you_fell" }] : [voicePlayer(id), { phrase: "fell" }]);
@@ -979,6 +1087,7 @@ function canTurn(): boolean {
 
 function showScreen(name: ScreenName): void {
   state.screen = name;
+  document.body.dataset.screen = name;
   for (const key of SCREENS) {
     ui.screens[key].classList.toggle("hidden", key !== name);
   }
@@ -996,24 +1105,12 @@ function renderLobby(): void {
   const isHost = state.playerId !== null && state.playerId === state.hostId;
 
   ui.lobbyKind.textContent = state.isPublic ? "Quick Match" : "Private room";
-  ui.roomCode.textContent = state.code;
+  ui.roomCode.replaceChildren(textNode(state.code), copyIcon());
   ui.roomCode.classList.toggle("hidden", state.isPublic);
   ui.lobbyHint.textContent = state.isPublic
-    ? "A public match. It starts a few seconds after a second player joins."
-    : "Share this code. Friends join from Play Online.";
-  ui.playerCount.textContent = `(${people})`;
-  ui.playerList.replaceChildren(
-    ...state.players.map((player) => {
-      const li = document.createElement("li");
-      const dot = document.createElement("span");
-      dot.className = "color-dot";
-      dot.style.background = PLAYER_COLORS[player.color % PLAYER_COLORS.length];
-      li.append(dot, textNode(player.name));
-      if (player.id === state.hostId) li.append(tag("Host", "host"));
-      if (player.id === state.playerId) li.append(tag("You", "you"));
-      return li;
-    }),
-  );
+    ? "A public match in a random arena. It starts a few seconds after a second player joins."
+    : "Share this code. Friends join from Play Online. Choose the arena below.";
+  ui.playerCount.textContent = `${people} / ${ROOM_SIZE}`;
 
   // The host can add bots to any room. A match always needs at least two players in total.
   const maxBots = Math.max(0, ROOM_SIZE - people);
@@ -1022,6 +1119,41 @@ function renderLobby(): void {
   const bots = Number(ui.lobbyBots.value);
   ui.lobbyBotCount.textContent = String(bots);
   ui.botsRow.classList.toggle("hidden", !isHost || maxBots === 0);
+
+  // One slot for each seat in the room: people, then bots that will be added, then empty seats.
+  const slots: HTMLElement[] = state.players.map((player) => {
+    const li = document.createElement("li");
+    const dot = document.createElement("span");
+    dot.className = "color-dot";
+    dot.style.background = PLAYER_COLORS[player.color % PLAYER_COLORS.length];
+    const name = document.createElement("span");
+    name.className = "nm";
+    name.textContent = player.name;
+    li.append(dot, name);
+    if (player.id === state.hostId) li.append(tag("Host", "host"));
+    if (player.id === state.playerId) li.append(tag("You", "you"));
+    return li;
+  });
+  for (let i = 0; i < ROOM_SIZE - people; i++) {
+    const li = document.createElement("li");
+    if (i < bots) {
+      const dot = document.createElement("span");
+      dot.className = "color-dot";
+      dot.style.background = "#60728c";
+      const name = document.createElement("span");
+      name.className = "nm";
+      name.textContent = "Bot";
+      li.append(dot, name, tag("Bot", "bot"));
+    } else {
+      li.className = "empty";
+      li.textContent = "Waiting for player…";
+    }
+    slots.push(li);
+  }
+  ui.playerList.replaceChildren(...slots);
+
+  const locked = !isHost || state.isPublic;
+  renderMapPicker(ui.lobbyMaps, state.isPublic ? "random" : state.lobbyMap, (choice) => send({ type: "map", map: choice }), locked);
 
   const total = people + bots;
   ui.start.classList.toggle("hidden", !isHost);
@@ -1035,23 +1167,40 @@ function renderLobby(): void {
   }
 }
 
+function copyIcon(): SVGSVGElement {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "icon");
+  svg.innerHTML = '<use href="#i-copy" />';
+  return svg;
+}
+
 function renderResults(): void {
   const mine = state.playerId;
   const place = mine ? state.ranking.indexOf(mine) + 1 : 0;
+  const won = state.winnerId !== null && state.winnerId === mine;
+  ui.resultTitle.classList.toggle("win", won);
+  ui.resultTitle.classList.toggle("lose", !won && state.winnerId !== null && place > 0);
   if (state.winnerId === null) {
-    ui.resultTitle.textContent = "No one survived. It's a draw.";
-  } else if (state.winnerId === mine) {
-    ui.resultTitle.textContent = "You won!";
+    ui.resultKicker.textContent = "Nobody left standing";
+    ui.resultTitle.textContent = "Draw";
+  } else if (won) {
+    ui.resultKicker.textContent = "Last one standing";
+    ui.resultTitle.textContent = "Victory";
   } else if (place > 0) {
-    ui.resultTitle.textContent = `You finished ${ordinal(place)}`;
+    ui.resultKicker.textContent = `You finished ${ordinal(place)}`;
+    ui.resultTitle.textContent = "Defeat";
   } else {
-    ui.resultTitle.textContent = `${nameOf(state.winnerId)} won`;
+    ui.resultKicker.textContent = "Match over";
+    ui.resultTitle.textContent = `${nameOf(state.winnerId)} wins`;
   }
 
   ui.ranking.replaceChildren(
     ...state.ranking.map((id) => {
       const li = document.createElement("li");
-      li.append(textNode(nameOf(id)));
+      const dot = document.createElement("span");
+      dot.className = "color-dot";
+      dot.style.background = colorFor(id);
+      li.append(dot, textNode(nameOf(id)));
       if (id === mine) li.classList.add("you");
       return li;
     }),
@@ -1059,12 +1208,18 @@ function renderResults(): void {
 }
 
 function renderHud(): void {
-  setText(ui.aliveCount, String(state.players.filter((p) => p.alive).length));
   setText(ui.ringRadius, state.radius.toFixed(1));
   setText(ui.phase, phaseText());
+  renderRoster();
 
   const target = state.phase === "HIDE" ? state.endsAt : state.phase === "REVEAL" ? state.fireAt : 0;
-  setText(ui.timer, target ? String(Math.max(0, Math.ceil((target - Date.now()) / 1000))) : "--");
+  const secondsLeft = target ? Math.max(0, Math.ceil((target - Date.now()) / 1000)) : null;
+  setText(ui.timer, secondsLeft === null ? "--" : String(secondsLeft));
+  // The ring around the number empties as the time runs out, and turns red for the last few seconds.
+  const total = state.phase === "HIDE" ? HIDE_MS : REVEAL_MS;
+  const fraction = target ? Math.min(1, Math.max(0, (target - Date.now()) / total)) : 1;
+  ui.timerArc.style.strokeDashoffset = String(175.93 * (1 - fraction));
+  ui.timerRing.classList.toggle("urgent", secondsLeft !== null && secondsLeft <= 5 && state.phase === "HIDE");
 
   // The lobby countdown for a public match.
   if (state.screen === "lobby") {
@@ -1094,7 +1249,7 @@ function renderHud(): void {
   const hiding = state.phase === "HIDE" && me?.alive === true;
   ui.controls.classList.toggle("hidden", !hiding);
   ui.lock.disabled = me?.locked === true;
-  setText(ui.lock, me?.locked ? "Locked in" : "Lock in");
+  setText(ui.lockLabel, me?.locked ? "Locked in" : "Lock in");
   const controlsHelp = isTouchDevice
     ? "Left side walks · right side turns"
     : "WASD to walk · mouse to look (click the screen) · Space to lock in";
@@ -1181,12 +1336,59 @@ function updatePerf(now: number): void {
     `res ${s.pixelRatio.toFixed(2)}x${s.lowPower ? "  low power" : ""}`;
 }
 
+/** Why each player is out, shown under their name in the roster. */
+const outReasons = new Map<string, string>();
+const rosterRows = new Map<string, HTMLLIElement>();
+let rosterOrder = "";
+
+/** The list of players on the left: each in their own color, with who you are, and who has been knocked out. */
+function renderRoster(): void {
+  const players = state.players;
+  setText(ui.aliveCount, String(players.filter((p) => p.alive).length));
+
+  const order = players.map((p) => p.id).join(",");
+  if (order !== rosterOrder) {
+    // A new match, or someone joined or left: rebuild the rows in order.
+    rosterOrder = order;
+    for (const row of rosterRows.values()) row.remove();
+    rosterRows.clear();
+    for (const player of players) {
+      const row = document.createElement("li");
+      row.innerHTML = '<span class="chip"></span><span class="who"><span class="nm"></span><span class="how"></span></span><span class="state"><svg class="icon"><use href="#i-check" /></svg></span>';
+      const chip = row.querySelector<HTMLElement>(".chip") as HTMLElement;
+      chip.style.background = PLAYER_COLORS[player.color % PLAYER_COLORS.length];
+      chip.style.setProperty("--c", PLAYER_COLORS[player.color % PLAYER_COLORS.length]);
+      rosterRows.set(player.id, row);
+      ui.roster.append(row);
+    }
+  }
+
+  for (const player of players) {
+    const row = rosterRows.get(player.id);
+    if (!row) continue;
+    const you = player.id === state.playerId;
+    row.classList.toggle("you", you);
+    setText(row.querySelector(".nm") as HTMLElement, you ? `${player.name} (you)` : player.name);
+    const wasOut = row.classList.contains("out");
+    if (!player.alive && !wasOut) {
+      // Just knocked out: flash red and shake once, then settle into the dimmed, struck-through look.
+      row.classList.add("out", "just-out");
+      row.querySelector("use")?.setAttribute("href", "#i-skull");
+      window.setTimeout(() => row.classList.remove("just-out"), 1200);
+    } else if (player.alive && wasOut) {
+      row.classList.remove("out", "just-out");
+      row.querySelector("use")?.setAttribute("href", "#i-check");
+    }
+    setText(row.querySelector(".how") as HTMLElement, player.alive ? "" : (outReasons.get(player.id) ?? "Eliminated"));
+  }
+}
+
 function phaseText(): string {
   switch (state.phase) {
     case "HIDE":
-      return state.me?.alive ? "Hidden · walk and set your aim" : "Watching";
+      return state.me?.alive ? "Hide and aim" : "Watching";
     case "REVEAL":
-      return "Revealed · stand your ground";
+      return "Revealed";
     case "FIRE":
       return "Lasers firing";
     case "RESULT":
@@ -1310,12 +1512,12 @@ function applySettings(): void {
     button.setAttribute("aria-pressed", String(button.dataset.quality === settings.quality));
   });
   audio.setVoice(settings.voice);
-  ui.musicToggle.textContent = settings.music ? "Music on" : "Music off";
+  ui.musicLabel.textContent = settings.music ? "Music on" : "Music off";
   ui.musicToggle.setAttribute("aria-pressed", String(settings.music));
 }
 
 function loadSettings(): Settings {
-  const fallback: Settings = { music: true, volume: 0.8, shake: true, voice: true, quality: "auto" };
+  const fallback: Settings = { music: true, volume: 0.8, shake: true, voice: true, quality: "auto", map: DEFAULT_MAP };
   try {
     const raw = localStorage.getItem("laser-ring:settings");
     if (!raw) return fallback;
@@ -1326,6 +1528,7 @@ function loadSettings(): Settings {
       shake: parsed.shake !== false,
       voice: parsed.voice !== false,
       quality: parsed.quality === "low" || parsed.quality === "high" ? parsed.quality : "auto",
+      map: parsed.map === "random" || isMapId(parsed.map) ? parsed.map : DEFAULT_MAP,
     };
   } catch {
     return fallback;

@@ -88,7 +88,9 @@ export class Robot implements Actor {
     const copies = new Map<THREE.Material, THREE.Material>();
     this.model.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
-      child.castShadow = !(child instanceof THREE.SkinnedMesh);
+      // Only the big parts cast shadows. Hands, feet and shoulders are too small to show one, and skipping them
+      // takes a large share of the work out of the shadow pass.
+      child.castShadow = /^(Torso|Head|Leg|LowerLeg|Arm)/.test(child.name);
       child.receiveShadow = false;
       const swap = (material: THREE.Material): THREE.Material => {
         let copy = copies.get(material);
@@ -141,8 +143,8 @@ export class Robot implements Actor {
     this.root.add(this.gun);
 
     if (name) {
-      this.label = makeLabel(name);
-      this.label.position.set(0, PLAYER_HEIGHT + 0.55, 0);
+      this.label = makeLabel(name, colorFor(id));
+      this.label.position.set(0, PLAYER_HEIGHT + 1.0, 0);
       this.root.add(this.label);
     }
     this.update(0);
