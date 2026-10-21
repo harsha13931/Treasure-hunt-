@@ -25,6 +25,8 @@ function revealTitle(): void {
   }
 }
 
+/** Movement is sent in batches this often, ten times a second, which halves the traffic on a phone connection. */
+const INPUT_BATCH_MS = 100;
 const HUD_INTERVAL_MS = 100;
 const MINIMAP_INTERVAL_MS = 66;
 const SCREENS = ["title", "home", "modes", "solo", "online", "lobby", "game", "results", "howto", "settings"] as const;
@@ -113,6 +115,8 @@ let lastCountdown = 0;
 let voiceReady = false;
 let lastFrame = performance.now();
 let lastHud = 0;
+const outbox: MoveInput[] = [];
+let lastFlush = 0;
 const shownText = new WeakMap<HTMLElement, string>();
 let perfOverlay: HTMLElement | null = null;
 let lastPerf = 0;
@@ -183,6 +187,7 @@ const ui = {
   roster: byId<HTMLUListElement>("roster"),
   lockLabel: document.querySelector("#lock span") as HTMLElement,
   musicLabel: document.querySelector("#music-toggle span") as HTMLElement,
+  net: byId("net"),
   timerArc: document.getElementById("timer-arc") as unknown as SVGCircleElement,
   timerRing: document.querySelector(".timer-ring") as HTMLElement,
   soloMaps: byId("solo-maps"),
@@ -508,9 +513,11 @@ function connect(then: (socket: WebSocket) => void, onFail?: (message: string) =
   }, 3000);
   socket.addEventListener("open", () => {
     opened = true;
+    lastPong = performance.now();
     window.clearTimeout(slow);
     hideLoader();
     then(socket);
+    send({ type: "ping", t: performance.now() }, socket);
   });
   socket.addEventListener("message", (event) => {
     let message: ServerMessage;
@@ -522,6 +529,7 @@ function connect(then: (socket: WebSocket) => void, onFail?: (message: string) =
     handle(message);
   });
   socket.addEventListener("close", () => {
+    if (state.socket === socket) setNet(null);
     if (!opened || state.leaving || state.socket !== socket) return;
     if (reconnecting) {
       retryRejoin();
@@ -554,6 +562,52 @@ function connect(then: (socket: WebSocket) => void, onFail?: (message: string) =
     else ui.menuError.textContent = message;
   });
 }
+
+// ---------- Connection health ----------
+
+let lastPong = performance.now();
+
+/** Shows how good the connection is: three bars and the delay in milliseconds. */
+function setNet(rtt: number | null): void {
+  ui.net.classList.toggle("hidden", rtt === null && state.socket?.readyState !== WebSocket.OPEN);
+  if (rtt === null) {
+    ui.net.className = "net poor";
+    setText(ui.net.querySelector("b") as HTMLElement, "…");
+    return;
+  }
+  ui.net.className = `net ${rtt < 120 ? "good" : rtt < 280 ? "fair" : "poor"}`;
+  setText(ui.net.querySelector("b") as HTMLElement, `${rtt}`);
+}
+
+// A heartbeat every few seconds. It measures the delay, and it notices a connection that has silently died, which a
+// phone leaving signal does without telling anyone, so the game can reconnect at once instead of freezing.
+window.setInterval(() => {
+  const socket = state.socket;
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  if (performance.now() - lastPong > 12_000) {
+    setNet(null);
+    socket.close();
+    return;
+  }
+  send({ type: "ping", t: performance.now() });
+}, 4000);
+
+/** The network came back, or the tab came back to the front: do not wait for the next timer to reconnect. */
+function nudgeReconnect(): void {
+  if (document.hidden || state.leaving) return;
+  const socket = state.socket;
+  if (reconnecting) {
+    if (socket?.readyState !== WebSocket.CONNECTING) retryRejoin(0);
+  } else if (state.playerId && loadSession() && socket?.readyState !== WebSocket.OPEN) {
+    reconnecting = true;
+    reconnectAttempts = 0;
+    retryRejoin(0);
+  } else if (socket?.readyState === WebSocket.OPEN) {
+    send({ type: "ping", t: performance.now() });
+  }
+}
+window.addEventListener("online", nudgeReconnect);
+document.addEventListener("visibilitychange", nudgeReconnect);
 
 // ---------- Reconnecting ----------
 
@@ -628,6 +682,11 @@ function send(message: ClientMessage, socket: WebSocket | null = state.socket): 
 
 function handle(message: ServerMessage): void {
   switch (message.type) {
+    case "pong":
+      lastPong = performance.now();
+      setNet(Math.round(lastPong - message.t));
+      break;
+
     case "joined":
       state.playerId = message.playerId;
       state.code = message.code;
@@ -1026,6 +1085,8 @@ function loop(now: number): void {
     world.setFacingMarker(null);
   }
 
+  if (outbox.length > 0 && now - lastFlush >= INPUT_BATCH_MS) flushInputs();
+
   // The text on screen only needs to change a few times a second. Writing it every frame costs real time.
   if (now - lastHud >= HUD_INTERVAL_MS) {
     lastHud = now;
@@ -1065,7 +1126,14 @@ function stepInput(): void {
   state.previous = { ...state.current };
   state.current = { ...stepPose(state.current, input, DT, state.radius), yaw: me.yaw };
   state.moving = Math.hypot(state.current.vx ?? 0, state.current.vz ?? 0) > 0.5;
-  send({ type: "input", ...input });
+  outbox.push(input);
+}
+
+/** Sends the movement steps made since the last batch. */
+function flushInputs(): void {
+  lastFlush = performance.now();
+  if (outbox.length === 0) return;
+  send({ type: "inputs", list: outbox.splice(0, outbox.length) });
 }
 
 function lockIn(): void {
@@ -1073,6 +1141,7 @@ function lockIn(): void {
   if (!me || !canTurn() || me.locked) return;
   me.locked = true;
   state.moving = false;
+  flushInputs();
   send({ type: "lock", yaw: me.yaw });
   if (pointerLocked) document.exitPointerLock();
   renderHud();

@@ -12,6 +12,10 @@ export type ClientMessage =
   /** Come back to a match after the connection dropped, using the token from `joined`. */
   | { type: "rejoin"; code: string; playerId: string; token: string }
   | ({ type: "input" } & MoveInput)
+  /** Several steps of movement at once. The browser sends these ten times a second instead of one message per step. */
+  | { type: "inputs"; list: MoveInput[] }
+  /** A heartbeat. The server answers with the same number, so the browser can measure the delay and notice a dead connection. */
+  | { type: "ping"; t: number }
   | { type: "lock"; yaw: number }
   | {
       type: "start";
@@ -46,6 +50,7 @@ export interface RevealPlayer {
 
 // Messages the server sends to the browser.
 export type ServerMessage =
+  | { type: "pong"; t: number }
   | { type: "joined"; code: string; playerId: string; token: string }
   | { type: "error"; message: string }
   | {

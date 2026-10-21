@@ -186,6 +186,12 @@ wss.on("connection", (socket: WebSocket) => {
     }
     const msg = message as ClientMessage;
 
+    // Heartbeats work before and after joining a room, and do not count as game messages.
+    if (msg.type === "ping") {
+      send({ type: "pong", t: Number(msg.t) || 0 });
+      return;
+    }
+
     if (!room) {
       if (msg.type === "create") {
         const created = openRoom(false);
@@ -232,7 +238,19 @@ wss.on("connection", (socket: WebSocket) => {
     room.handle(playerId as string, msg);
   });
 
-  socket.on("close", () => {
+  const connectedAt = Date.now();
+  socket.on("close", (code, reason) => {
+    // One line per drop, so the logs show whether connections end cleanly (1000, 1001) or are cut (1005, 1006).
+    console.log(
+      JSON.stringify({
+        event: "disconnect",
+        code,
+        reason: reason.toString().slice(0, 60),
+        room: room?.code ?? null,
+        phase: room?.currentPhase ?? null,
+        seconds: Math.round((Date.now() - connectedAt) / 1000),
+      }),
+    );
     if (room && playerId) room.disconnect(playerId, send);
   });
 });

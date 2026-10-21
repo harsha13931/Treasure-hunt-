@@ -258,6 +258,20 @@ export class Room {
         return;
       }
 
+      case "inputs": {
+        if (this.phase !== "HIDE" || !player.alive || player.locked || !Array.isArray(message.list)) return;
+        // A browser sends a batch every tenth of a second. Only a sensible number of steps is accepted from each.
+        for (const item of message.list.slice(0, MAX_QUEUED_INPUTS)) {
+          if (player.queue.length >= MAX_QUEUED_INPUTS) break;
+          player.queue.push(sanitizeInput(item));
+        }
+        return;
+      }
+
+      case "ping":
+        // Answered by the connection itself. Nothing for the room to do.
+        return;
+
       case "lock": {
         if (this.phase !== "HIDE") throw new Error("You can only lock in during the hide phase.");
         if (!player.alive) throw new Error("You are out of the game.");

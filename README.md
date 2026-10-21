@@ -83,6 +83,9 @@ Then open `http://localhost:8080`.
 
 ## Running well on Render's free plan
 
+- **Choose the region nearest your players.** A service in the default US region is slow for players in India. In the Render dashboard create the service in **Singapore** (the region cannot be changed later, so make a new service and point it at the same branch). This is the biggest fix for lag and drops.
+- The game shows a connection light with the delay in milliseconds, sends movement ten times a second in batches, and notices a dead connection within about 12 seconds and reconnects. The server logs one `disconnect` line for each dropped connection with its close code, so the Render logs show why drops happen.
+
 - Text files (the game's code, page and model) are sent compressed (Brotli or gzip), about a quarter of their size, and browsers reuse their copies instead of downloading again.
 - A free service goes to sleep after about 15 minutes without a visit, and the next visit waits up to a minute for it to wake. The game shows "Waking up the server" and retries by itself. To stop it sleeping, make a free monitor at https://uptimerobot.com that requests `https://your-service.onrender.com/healthz` every 5 minutes.
 - Rooms live in memory, so keep the service at one instance, and a restart ends running matches. Players who lose connection can rejoin for 45 seconds.

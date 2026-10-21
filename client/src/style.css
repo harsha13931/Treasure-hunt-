@@ -269,6 +269,60 @@ body[data-screen="results"] .scrim {
   color: var(--cyan);
 }
 
+.net {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  padding: 8px 12px;
+  font-family: var(--display);
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--ink);
+  background: rgba(8, 14, 26, 0.78);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.net i {
+  width: 4px;
+  border-radius: 2px;
+  background: rgba(130, 185, 255, 0.28);
+}
+
+.net i:nth-child(1) {
+  height: 7px;
+}
+
+.net i:nth-child(2) {
+  height: 11px;
+}
+
+.net i:nth-child(3) {
+  height: 15px;
+}
+
+.net b {
+  margin-left: 6px;
+  align-self: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.net.good i {
+  background: var(--green);
+}
+
+.net.fair i:nth-child(-n + 2) {
+  background: var(--gold);
+}
+
+.net.poor i:nth-child(1) {
+  background: var(--red);
+}
+
+.net.poor {
+  color: #ff9ca1;
+}
+
 .top-chips {
   position: fixed;
   top: 14px;

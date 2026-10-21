@@ -112,6 +112,30 @@ describe("Room", () => {
     expect(self?.ack).toBeGreaterThanOrEqual(18);
   });
 
+  it("applies movement that arrives in a batch, the same as one step at a time", () => {
+    const make = () => {
+      const room = roomWith([
+        { x: -5, z: 0, yaw: FACE_EAST },
+        { x: 5, z: 0, yaw: FACE_WEST },
+      ]);
+      const a = connect(room, "Ann");
+      connect(room, "Ben");
+      room.handle(a.id, { type: "start" });
+      return { room, a };
+    };
+    const steps = [1, 2, 3, 4].map((seq) => ({ seq, forward: 1, strafe: 0, yaw: FACE_EAST }));
+
+    const single = make();
+    for (const step of steps) single.room.handle(single.a.id, { type: "input", ...step });
+    const batch = make();
+    batch.room.handle(batch.a.id, { type: "inputs", list: steps });
+
+    vi.advanceTimersByTime(TICK_MS * 5);
+    const x = (client: Client) => lastOf(client, "self")?.x ?? 0;
+    expect(x(batch.a)).toBeGreaterThan(-5);
+    expect(x(batch.a)).toBeCloseTo(x(single.a), 6);
+  });
+
   it("keeps a moving player inside the ring", () => {
     const room = roomWith([
       { x: 0, z: 0, yaw: FACE_EAST },
