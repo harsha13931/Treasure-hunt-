@@ -3,6 +3,24 @@ const MUSIC_URL = "/music/";
 const MATCH_STEMS = ["bed", "pulse", "drive"] as const;
 type MusicScene = "menu" | "match";
 
+/** The announcer: clips rendered ahead of time by tools/voice/render_voice.py. */
+const VOICE_URL = "/voice/";
+const COLOR_PHRASES = ["red", "blue", "yellow", "green", "purple", "pink", "cyan", "orange"];
+
+/** One piece of an announcement: a fixed phrase, or a player (called by name, or by color if the name has no clip). */
+export type VoicePart = { phrase: string } | { name: string; color: number };
+
+/** The first word of a player's name, letters only, in lower case. "Bot Ace" and "ace_77" both become "ace". */
+export function nameKey(name: string): string | null {
+  const words = name
+    .toLowerCase()
+    .split(/[^a-z]+/)
+    .filter(Boolean);
+  if (words.length > 1 && words[0] === "bot") words.shift();
+  const word = words.find((w) => w.length >= 2);
+  return word ?? null;
+}
+
 /** 0 below `from`, 1 above `to`, smooth in between. */
 function smoothstep(from: number, to: number, x: number): number {
   const t = Math.min(1, Math.max(0, (x - from) / (to - from)));
@@ -34,10 +52,18 @@ export class Audio {
   private volume = 0.8;
   private intensity = 0.4;
   private voiceOn = true;
-  private voice: SpeechSynthesisVoice | null = null;
+  private voiceManifest: Promise<{ names: Set<string>; phrases: string[] } | null> | null = null;
+  private voiceLoads = new Map<string, Promise<AudioBuffer | null>>();
+  /** When the announcer finishes the line that is playing, so the next one waits its turn. */
+  private voiceFreeAt = 0;
 
   get isMusicOn(): boolean {
     return this.musicOn;
+  }
+
+  /** True once the browser has let the page make sound, which needs a tap or click first. */
+  get isRunning(): boolean {
+    return this.context?.state === "running";
   }
 
   /** Sets the master volume for every sound, from 0 to 1. */
@@ -51,32 +77,107 @@ export class Audio {
   /** Turns the spoken announcements on or off. */
   setVoice(on: boolean): void {
     this.voiceOn = on;
-    if (!on) window.speechSynthesis?.cancel();
   }
 
   /**
-   * Says a line out loud with the browser's built-in voice, so nothing is downloaded and nothing is licensed.
-   * Lines never pile up: if several are waiting, the oldest are dropped so the call-out stays close to the action.
+   * Gets the announcer ready: the list of names that have recorded clips, the fixed phrases, and a clip for each
+   * of the given player names. Call it as soon as the names are known, so the lines play the instant they are needed.
    */
-  speak(text: string): void {
-    const synth = window.speechSynthesis;
-    if (!this.voiceOn || !synth || this.volume === 0) return;
+  async prepareVoice(playerNames: string[] = []): Promise<void> {
+    if (!this.ensure()) return;
     try {
-      if (synth.pending) synth.cancel();
-      const line = new SpeechSynthesisUtterance(text);
-      this.voice ??= pickVoice(synth);
-      if (this.voice) {
-        line.voice = this.voice;
-        line.lang = this.voice.lang;
-      } else {
-        line.lang = "en-US";
+      if (!this.voiceManifest) {
+        this.voiceManifest ??= fetch(`${VOICE_URL}manifest.json`)
+          .then((response) => (response.ok ? response.json() : null))
+          .then((json: { names: string[]; phrases: string[] } | null) =>
+            json ? { names: new Set(json.names), phrases: json.phrases } : null,
+          )
+          .catch(() => null);
       }
-      line.rate = 1.02;
-      line.pitch = 0.85;
-      line.volume = Math.min(1, this.volume);
-      synth.speak(line);
+      const manifest = await this.voiceManifest;
+      if (!manifest) {
+        this.voiceManifest = null;
+        return;
+      }
+      const wanted = manifest.phrases.map((id) => `phrases/${id}`);
+      for (const name of playerNames) {
+        const key = nameKey(name);
+        if (key && manifest.names.has(key)) wanted.push(`names/${key}`);
+      }
+      await Promise.all(wanted.map((path) => this.loadVoiceClip(path)));
     } catch {
-      // Speech is optional. The banner and the feed still show the same words.
+      // The announcer is optional. Banners and the feed show the same news.
+    }
+  }
+
+  private loadVoiceClip(path: string): Promise<AudioBuffer | null> {
+    const cached = this.voiceLoads.get(path);
+    if (cached) return cached;
+    const ctx = this.context;
+    const pending = (async () => {
+      if (!ctx) return null;
+      try {
+        const response = await fetch(`${VOICE_URL}${path}.mp3`);
+        if (!response.ok) return null;
+        return await ctx.decodeAudioData(await response.arrayBuffer());
+      } catch {
+        this.voiceLoads.delete(path);
+        return null;
+      }
+    })();
+    this.voiceLoads.set(path, pending);
+    return pending;
+  }
+
+  /**
+   * Calls out a line made of recorded clips, such as "Ace" + "was eliminated by" + "Blitz". A player whose name has
+   * no clip is called by their color instead ("Red robot"). Lines never overlap: a new one waits for the last.
+   */
+  async announce(parts: VoicePart[]): Promise<void> {
+    const ctx = this.ensure();
+    if (!this.voiceOn || !ctx || !this.master || this.volume === 0) return;
+    const manifest = await this.voiceManifest;
+    if (!manifest) {
+      void this.prepareVoice();
+      return;
+    }
+    const buffers: AudioBuffer[] = [];
+    for (const part of parts) {
+      let path: string;
+      if ("phrase" in part) {
+        path = `phrases/${part.phrase}`;
+      } else {
+        const key = nameKey(part.name);
+        path = key && manifest.names.has(key) ? `names/${key}` : `phrases/${COLOR_PHRASES[part.color % COLOR_PHRASES.length]}`;
+      }
+      const buffer = await this.loadVoiceClip(path);
+      // A missing clip is skipped rather than leaving the whole line silent.
+      if (buffer) buffers.push(buffer);
+    }
+    if (buffers.length === 0) return;
+
+    const now = ctx.currentTime;
+    let at = Math.max(now + 0.02, this.voiceFreeAt);
+    // A line that would start many seconds late is no longer news.
+    if (at - now > 5) return;
+    const start = at;
+    for (const buffer of buffers) {
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      const gain = ctx.createGain();
+      gain.gain.value = 1.15;
+      source.connect(gain).connect(this.master);
+      source.start(at);
+      at += buffer.duration + 0.04;
+    }
+    this.voiceFreeAt = at;
+
+    // Lower the music while the announcer talks, so every word is clear.
+    const music = this.playing?.out;
+    if (music) {
+      music.gain.cancelScheduledValues(now);
+      music.gain.setTargetAtTime(0.4, Math.max(now, start - 0.05), 0.08);
+      music.gain.setTargetAtTime(this.playing?.scene === "menu" ? 0.9 : 1, at, 0.35);
     }
   }
 
@@ -517,15 +618,4 @@ export class Audio {
   private stopMusic(): void {
     this.fadeOutMusic(1);
   }
-}
-
-/** Prefers a clear English voice. Falls back to whatever the browser offers. */
-function pickVoice(synth: SpeechSynthesis): SpeechSynthesisVoice | null {
-  const voices = synth.getVoices();
-  const english = voices.filter((voice) => voice.lang.toLowerCase().startsWith("en"));
-  return (
-    english.find((voice) => /natural|google|premium|enhanced|daniel|alex|samantha/i.test(voice.name)) ??
-    english[0] ??
-    null
-  );
 }

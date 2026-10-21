@@ -505,7 +505,14 @@ export class Room {
     // so a match always keeps moving toward an ending.
     this.noKillStreak = this.lastKills === 0 ? this.noKillStreak + 1 : 0;
     this.volleysSinceShrink += 1;
-    if (this.noKillStreak >= NO_KILL_VOLLEYS_BEFORE_SHRINK || this.volleysSinceShrink >= FORCED_SHRINK_EVERY_VOLLEYS) {
+    if (this.radius - MIN_RING_RADIUS < 1e-6) {
+      // The last circle cannot close any further, so there is nothing to break and nothing to announce.
+      this.noKillStreak = 0;
+      this.volleysSinceShrink = 0;
+    } else if (
+      this.noKillStreak >= NO_KILL_VOLLEYS_BEFORE_SHRINK ||
+      this.volleysSinceShrink >= FORCED_SHRINK_EVERY_VOLLEYS
+    ) {
       this.shrinkRing();
     }
     this.schedule(RESULT_MS, () => this.enterHide());

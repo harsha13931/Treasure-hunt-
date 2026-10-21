@@ -38,7 +38,7 @@ export type CameraView =
   | { kind: "title" };
 
 /** Sounds the world asks the page to play, so the world itself stays free of audio. */
-export type WorldSound = "shot" | "hit" | "collapse" | "fall";
+export type WorldSound = "shot" | "hit" | "collapse" | "fall" | "step";
 
 interface TimedBeam {
   group: THREE.Group;
@@ -77,6 +77,14 @@ const BEAM_FADE_MS = 500;
 /** Title scene: seconds from standing off to the shot, and to the end of the loop. */
 const TITLE_SHOT_AT = 2.6;
 const TITLE_LOOP = 9;
+// The opening scene: two robots walk in from opposite sides, face off, and shoot each other.
+const INTRO_START_X = 16;
+const INTRO_DUEL_X = 4.2;
+const INTRO_WALK_SPEED = 4.6;
+/** The stare-down before the shots, in seconds. */
+const INTRO_HOLD = 1.0;
+/** How long after the shots the title appears. */
+const INTRO_REVEAL_AFTER = 1.5;
 
 /**
  * The pit, the multi-level floor and the cage that closes in, the stick men, the lasers,
@@ -110,6 +118,13 @@ export class World {
   private characters = new Map<string, Actor>();
   private titleActors = new Map<string, Actor>();
   private title: { time: number; cycle: number; fired: boolean } | null = null;
+  private intro: {
+    t: number;
+    arrivedAt: number | null;
+    firedAt: number | null;
+    stepTimer: number;
+    onReveal: () => void;
+  } | null = null;
 
   private snow!: THREE.Points;
   private snowSpeed!: Float32Array;
@@ -130,6 +145,7 @@ export class World {
   private adaptTimer = 0;
   private qualityMode: "auto" | "low" | "high" = "auto";
   private timeScale = 1;
+  private sceneElapsed = 0;
   private slowLeft = 0;
   private slowSeconds = 0;
   private lowPower = false;
@@ -242,9 +258,10 @@ export class World {
   /**
    * Sets the cage radius. When it gets smaller, the floor levels outside it break away and fall,
    * and the cage closes in. Pass `animate: false` to jump straight to the new state.
+   * Returns how many pieces of floor broke away, which is zero when nothing changed.
    */
-  setRing(radius: number, animate = true): void {
-    if (Math.abs(radius - this.targetRadius) < 0.01) return;
+  setRing(radius: number, animate = true): number {
+    if (Math.abs(radius - this.targetRadius) < 0.01) return 0;
 
     if (radius > this.targetRadius) {
       // A new match: the floor is whole again.
@@ -252,7 +269,7 @@ export class World {
       this.shownRadius = radius;
       this.buildFloor();
       this.applyRadius(radius);
-      return;
+      return 0;
     }
 
     this.targetRadius = radius;
@@ -261,7 +278,7 @@ export class World {
       for (const tile of lost) this.removeTile(tile);
       this.shownRadius = radius;
       this.applyRadius(radius);
-      return;
+      return 0;
     }
 
     this.fallingCount += lost.length;
@@ -284,6 +301,7 @@ export class World {
       this.shake(0.9);
       this.onSound?.("collapse");
     }
+    return lost.length;
   }
 
   /** These players were standing on ice that just broke. They fall with it, into the crevasse. */
@@ -423,6 +441,99 @@ export class World {
     this.scene.add(a.root, b.root);
     this.title = { time: 0, cycle: 0, fired: false };
     this.view = { kind: "title" };
+  }
+
+  /**
+   * The opening scene. One robot walks in from each side, they stop and face each other, and both fire.
+   * `onReveal` is called when the title should appear. Call this right after the title scene is shown.
+   */
+  playIntro(onReveal: () => void): void {
+    const a = this.titleActors.get("title-a");
+    const b = this.titleActors.get("title-b");
+    if (!a || !b || !this.title) {
+      onReveal();
+      return;
+    }
+    this.clearBeams();
+    a.setPose(-INTRO_START_X, 0, Math.PI / 2);
+    b.setPose(INTRO_START_X, 0, -Math.PI / 2);
+    a.setMoving(true);
+    b.setMoving(true);
+    this.intro = { t: 0, arrivedAt: null, firedAt: null, stepTimer: 0, onReveal };
+  }
+
+  /** Jumps to the end of the opening scene. */
+  skipIntro(): void {
+    const intro = this.intro;
+    const a = this.titleActors.get("title-a");
+    const b = this.titleActors.get("title-b");
+    if (!intro || !a || !b) return;
+    a.setPose(-INTRO_DUEL_X, 0, Math.PI / 2);
+    b.setPose(INTRO_DUEL_X, 0, -Math.PI / 2);
+    a.setMoving(false);
+    b.setMoving(false);
+    this.finishIntro();
+  }
+
+  get introPlaying(): boolean {
+    return this.intro !== null;
+  }
+
+  private finishIntro(): void {
+    const intro = this.intro;
+    if (!intro) return;
+    this.intro = null;
+    // The duel carries on as the title backdrop, after the two have lain there for a moment.
+    if (this.title) {
+      this.title.time = TITLE_LOOP - 2.6;
+      this.title.cycle = 1;
+      this.title.fired = true;
+    }
+    intro.onReveal();
+  }
+
+  /** Runs the opening scene's timeline: walk in, stare down, fire, then hand over to the title. */
+  private updateIntro(dt: number): void {
+    const intro = this.intro;
+    const a = this.titleActors.get("title-a");
+    const b = this.titleActors.get("title-b");
+    if (!intro || !a || !b) return;
+    intro.t += dt;
+
+    if (intro.arrivedAt === null) {
+      const x = Math.max(INTRO_DUEL_X, INTRO_START_X - INTRO_WALK_SPEED * intro.t);
+      a.setPose(-x, 0, Math.PI / 2);
+      b.setPose(x, 0, -Math.PI / 2);
+      intro.stepTimer += dt;
+      if (intro.stepTimer >= 0.4) {
+        intro.stepTimer = 0;
+        this.onSound?.("step");
+      }
+      if (x <= INTRO_DUEL_X) {
+        intro.arrivedAt = intro.t;
+        a.setMoving(false);
+        b.setMoving(false);
+      }
+      return;
+    }
+
+    if (intro.firedAt === null && intro.t >= intro.arrivedAt + INTRO_HOLD) {
+      intro.firedAt = intro.t;
+      const reach = INTRO_DUEL_X * 2 - PLAYER_RADIUS - BEAM_HALF_WIDTH;
+      this.fire([
+        { shooter: "title-a", from: { x: -INTRO_DUEL_X + MUZZLE_FORWARD, z: 0 }, to: { x: -INTRO_DUEL_X + reach, z: 0 }, hit: "title-b" },
+        { shooter: "title-b", from: { x: INTRO_DUEL_X - MUZZLE_FORWARD, z: 0 }, to: { x: INTRO_DUEL_X - reach, z: 0 }, hit: "title-a" },
+      ]);
+      this.shake(0.9);
+      this.slowMotion(1.1);
+      window.setTimeout(() => {
+        a.setAlive(false);
+        b.setAlive(false);
+      }, 140);
+      return;
+    }
+
+    if (intro.firedAt !== null && intro.t >= intro.firedAt + INTRO_REVEAL_AFTER) this.finishIntro();
   }
 
   dispose(): void {
@@ -809,7 +920,10 @@ export class World {
    * so the picture always shows the latest positions and camera.
    */
   render(): void {
-    const realDt = Math.min(0.1, this.clock.getDelta());
+    const elapsed = this.clock.getDelta();
+    // The opening scene follows the clock, so a slow device sees it take as long as a fast one.
+    this.sceneElapsed = Math.min(0.5, elapsed);
+    const realDt = Math.min(0.1, elapsed);
     // Slow motion stretches the action but not the camera or the snow.
     if (this.slowLeft > 0) {
       this.slowLeft -= realDt;
@@ -972,6 +1086,10 @@ export class World {
   private updateTitle(dt: number): void {
     const title = this.title;
     if (!title) return;
+    if (this.intro) {
+      this.updateIntro(this.sceneElapsed * this.timeScale);
+      return;
+    }
     title.time += dt;
 
     const shooter = this.titleActors.get(title.cycle % 2 === 0 ? "title-a" : "title-b");
@@ -1043,10 +1161,18 @@ export class World {
     } else if (view.kind === "title") {
       this.followActive = false;
       // A slow sweep around the two duelists. The menu sits on the left, so they sit right of center.
-      const sweep = Math.PI / 2 + Math.sin(performance.now() * 0.00028) * 0.55;
-      desired.set(Math.cos(sweep) * 17, 5.2, Math.sin(sweep) * 17);
-      look.set(this.camera.aspect > 1.3 ? -4.2 : 0, 2.6, 0);
-      rate = 3;
+      if (this.intro) {
+        // The opening shot: low and wide, easing in toward the two as they meet.
+        const p = Math.min(1, this.intro.t / 5);
+        desired.set(-4 + 8 * p, 3 + 1.3 * p, 22 - 8.5 * p);
+        look.set(0, 2.7, 0);
+        rate = 2.2;
+      } else {
+        const sweep = Math.PI / 2 + Math.sin(performance.now() * 0.00028) * 0.55;
+        desired.set(Math.cos(sweep) * 17, 5.2, Math.sin(sweep) * 17);
+        look.set(this.camera.aspect > 1.3 ? -4.2 : 0, 2.6, 0);
+        rate = 3;
+      }
     } else {
       this.followActive = false;
       // Frame the people who are still alive, and zoom in as they get fewer or closer together.

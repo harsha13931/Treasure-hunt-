@@ -6,7 +6,9 @@ import {
   REVEAL_MS,
   RESULT_MS,
   RECONNECT_GRACE_MS,
+  MIN_RING_RADIUS,
   RING_SHRINK_STEP,
+  ringLevels,
   SONAR_NOISE,
   PLAYER_COLORS,
   ROOM_SIZE,
@@ -456,6 +458,27 @@ describe("Room", () => {
     room.leave(b.id);
     const c = connect(room, "Cy");
     expect(colorOf(c.id)).toBe(benColor);
+  });
+
+  it("does not announce a collapse once the ring is as small as it gets", () => {
+    const room = roomWith([
+      { x: -1, z: 0, yaw: FACE_NORTH },
+      { x: 1, z: 0, yaw: FACE_NORTH },
+    ]);
+    const a = connect(room, "Ann");
+    const b = connect(room, "Ben");
+    room.handle(a.id, { type: "start" });
+    const volleyLength = REVEAL_MS + FIRE_MS + RESULT_MS;
+    // Nobody is ever hit, so the ring shrinks every second volley until it cannot go further.
+    for (let i = 0; i < 30; i++) {
+      lockAll(room, [a, b], [FACE_NORTH, FACE_NORTH]);
+      vi.advanceTimersByTime(volleyLength);
+    }
+    expect(room.ringRadius).toBeCloseTo(MIN_RING_RADIUS, 6);
+    const rings = a.messages.filter((m) => m.type === "ring");
+    // One message per real shrink, and none after the last circle was reached.
+    expect(rings.length).toBe(ringLevels().length - 1);
+    for (const ring of rings) expect(ring.radius).toBeLessThan(START_RING_RADIUS);
   });
 
   it("says who was knocked out and by whom", () => {

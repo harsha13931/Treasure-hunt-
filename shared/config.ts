@@ -18,7 +18,8 @@ export const TICK_MS = 50;
 // The circle the players must stay inside. It shrinks in steps.
 export const START_RING_RADIUS = 18;
 export const RING_SHRINK_STEP = 2.5;
-export const MIN_RING_RADIUS = 5.5;
+/** The last circle. Two or three players fit, close enough that a match always ends. */
+export const MIN_RING_RADIUS = 3;
 /** After this many volleys in a row with no kill, the ring shrinks one step. */
 export const NO_KILL_VOLLEYS_BEFORE_SHRINK = 2;
 /** The ring also shrinks after this many volleys even if there were kills, so a match always moves on. */

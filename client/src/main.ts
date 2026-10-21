@@ -1,13 +1,27 @@
-import { PLAYER_COLORS, ROOM_CODE_LENGTH, ROOM_SIZE, START_RING_RADIUS, TICK_MS, type BotDifficulty } from "../../shared/config.js";
+import { MIN_RING_RADIUS, PLAYER_COLORS, ROOM_CODE_LENGTH, ROOM_SIZE, START_RING_RADIUS, TICK_MS, type BotDifficulty } from "../../shared/config.js";
 import type { Beam, Kill } from "../../shared/geometry.js";
 import { facing, stepPose, type MoveInput, type Pose } from "../../shared/movement.js";
 import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../../shared/protocol.js";
 import { Audio } from "./audio.js";
 import { assignColors, colorFor } from "./stickman.js";
+import type { VoicePart } from "./audio.js";
 import { haptic } from "./haptics.js";
 import { FloatingJoystick, HoldButton } from "./touch.js";
 import { loadRobot } from "./robot.js";
 import { World } from "./world.js";
+
+let introSkipListener: (() => void) | null = null;
+
+/** Called when the opening scene reaches its end: the title and the Start Game button appear. */
+function revealTitle(): void {
+  document.body.classList.remove("intro");
+  ui.screens.title.classList.add("ready");
+  if (introSkipListener) {
+    window.removeEventListener("pointerdown", introSkipListener);
+    window.removeEventListener("keydown", introSkipListener);
+    introSkipListener = null;
+  }
+}
 
 const HUD_INTERVAL_MS = 100;
 const MINIMAP_INTERVAL_MS = 66;
@@ -96,6 +110,7 @@ const keys = new Set<string>();
 let pointerLocked = false;
 let stepTimer = 0;
 let lastCountdown = 0;
+let voiceReady = false;
 let lastFrame = performance.now();
 let lastHud = 0;
 const shownText = new WeakMap<HTMLElement, string>();
@@ -187,12 +202,29 @@ document.body.classList.toggle("touch", isTouchDevice);
 ui.name.value = readSavedName();
 applySettings();
 // The title scene uses the robot, so wait for the model (a fraction of a second) before drawing it.
-void loadRobot().then(() => showScreen("title"));
+void loadRobot().then(() => {
+  showScreen("title");
+  // The opening scene plays once, when the game opens. It is skipped when coming straight back into a match.
+  const params = new URLSearchParams(location.search);
+  if (params.has("nointro") || loadSession()) {
+    revealTitle();
+    return;
+  }
+  document.body.classList.add("intro");
+  world.playIntro(revealTitle);
+  const skip = (): void => world.skipIntro();
+  window.addEventListener("pointerdown", skip, { once: true });
+  window.addEventListener("keydown", skip, { once: true });
+  introSkipListener = skip;
+});
 if (new URLSearchParams(location.search).has("perf")) startPerfOverlay();
 
 // The world asks for sounds, and the page plays them.
 world.onSound = (sound) => {
-  if (sound === "shot") audio.playShot();
+  // Before the first tap the browser keeps audio locked. Sounds are skipped then, so none burst out later.
+  if (!audio.isRunning) return;
+  if (sound === "step") audio.playFootstep();
+  else if (sound === "shot") audio.playShot();
   else if (sound === "hit") audio.playHit();
   else if (sound === "fall") audio.playFall();
   else audio.playCollapse();
@@ -208,6 +240,11 @@ document.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
   if (target.closest("button") && !target.closest(".pad-btn")) audio.playClick();
   if (settings.music && !audio.isMusicOn) audio.setMusic(true);
+  if (!voiceReady) {
+    // The first tap: start fetching the announcer's phrases, so they are ready long before the first knock-out.
+    voiceReady = true;
+    void audio.prepareVoice();
+  }
 });
 
 // The first tap. It unlocks sound, and on a phone it goes fullscreen and landscape before the menu appears.
@@ -341,7 +378,7 @@ ui.setVoice.addEventListener("change", () => {
   settings.voice = ui.setVoice.checked;
   applySettings();
   saveSettings();
-  if (settings.voice) audio.speak("Voice announcements on");
+  if (settings.voice) void audio.announce([{ phrase: "you_win" }]);
 });
 ui.setShake.addEventListener("change", () => {
   settings.shake = ui.setShake.checked;
@@ -570,8 +607,7 @@ function handle(message: ServerMessage): void {
 
     case "ring":
       state.radius = message.radius;
-      world.setRing(message.radius);
-      onFallen(message.fallen ?? []);
+      onFallen(message.fallen ?? [], world.setRing(message.radius) > 0);
       break;
 
     case "match_over":
@@ -622,6 +658,7 @@ function onHide(message: Extract<ServerMessage, { type: "hide" }>): void {
   state.radius = message.radius;
   state.players = message.players;
   assignColors(message.players);
+  void audio.prepareVoice(message.players.map((p) => p.name));
   state.revealed = [];
   world.setRing(message.radius, false);
   world.clearBeams();
@@ -719,8 +756,8 @@ function onFire(beams: Beam[], eliminated: string[], kills: Kill[]): void {
   // The shot that ends the match gets a moment of slow motion.
   if (kills.length > 0 && state.players.filter((p) => p.alive).length <= 1) world.slowMotion(1.8);
   if (kills.length > 0) {
-    // The same words are spoken, so players who are busy watching the fight still hear who went down.
-    audio.speak(kills.map(killText).join(". "));
+    // The same news is spoken, so players who are busy watching the fight still hear who went down.
+    for (const kill of kills.slice(0, 3)) void audio.announce(killVoice(kill));
   }
   if (kills.length === 1) {
     showBanner(killText(kills[0]), 2600);
@@ -738,15 +775,40 @@ function onFire(beams: Beam[], eliminated: string[], kills: Kill[]): void {
   }
 }
 
+/** A player as the announcer says them: "you" for the local player, otherwise by name (or by color). */
+function voicePlayer(id: string): VoicePart {
+  if (id === state.playerId) return { phrase: "you" };
+  const player = state.players.find((p) => p.id === id);
+  return { name: player?.name ?? "", color: player?.color ?? 0 };
+}
+
+function killVoice(kill: Kill): VoicePart[] {
+  const parts: VoicePart[] =
+    kill.victim === state.playerId ? [{ phrase: "you_were_eliminated_by" }] : [voicePlayer(kill.victim), { phrase: "was_eliminated_by" }];
+  kill.killers.forEach((id, index) => {
+    if (index > 0) parts.push({ phrase: "and" });
+    parts.push(voicePlayer(id));
+  });
+  return parts;
+}
+
 /** "Ben was eliminated by Ann". Written for "You" too: "You were eliminated by Ann". */
 function killText(kill: Kill): string {
   return `${displayName(kill.victim)} ${kill.victim === state.playerId ? "were" : "was"} eliminated by ${joinNames(kill.killers)}`;
 }
 
 /** The outer ice broke. Anyone standing on it falls with it. */
-function onFallen(fallen: string[]): void {
+function onFallen(fallen: string[], floorBroke: boolean): void {
   if (fallen.length === 0) {
-    showBanner("The floor breaks away");
+    // Only say the floor broke if some of it really did.
+    if (floorBroke) {
+      if (state.radius - MIN_RING_RADIUS < 0.01) {
+        showBanner("Final circle", 2400);
+        void audio.announce([{ phrase: "final_circle" }]);
+      } else {
+        showBanner("The floor breaks away");
+      }
+    }
     return;
   }
   for (const id of fallen) {
@@ -755,11 +817,9 @@ function onFallen(fallen: string[]): void {
     addFeed(id, "fell into the crevasse", []);
   }
   world.plunge(fallen);
-  audio.speak(
-    fallen.length <= 3
-      ? fallen.map((id) => `${displayName(id)} fell into the crevasse`).join(". ")
-      : `${fallen.length} players fell into the crevasse`,
-  );
+  for (const id of fallen.slice(0, 3)) {
+    void audio.announce(id === state.playerId ? [{ phrase: "you_fell" }] : [voicePlayer(id), { phrase: "fell" }]);
+  }
   const first = fallen[0];
   showBanner(
     fallen.length === 1
@@ -815,7 +875,9 @@ function onMatchOver(message: Extract<ServerMessage, { type: "match_over" }>): v
   if (wasPlaying) {
     audio.playResult(message.winnerId === state.playerId);
     if (message.winnerId) {
-      audio.speak(message.winnerId === state.playerId ? "You win the match" : `${nameOf(message.winnerId)} wins the match`);
+      void audio.announce(
+        message.winnerId === state.playerId ? [{ phrase: "you_win" }] : [voicePlayer(message.winnerId), { phrase: "wins" }],
+      );
     }
   }
 
