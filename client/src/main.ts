@@ -173,6 +173,9 @@ const ui = {
   minimap: byId<HTMLCanvasElement>("minimap"),
   aliveCount: byId("alive-count"),
   ringRadius: byId("ring-radius"),
+  roundCard: byId("round-card"),
+  roundTitle: byId("round-title"),
+  roundSub: byId("round-sub"),
   phase: byId("phase"),
   timer: byId("timer"),
   controls: byId("controls"),
@@ -795,7 +798,7 @@ function onHide(message: Extract<ServerMessage, { type: "hide" }>): void {
   world.setMap(message.map);
   applyFloor(message.map, message.floor);
   world.clearBeams();
-  announceRound(message.floor);
+  announceRound(message.volley, message.floor);
 
   const you = message.you;
   const me: Me = { id: state.playerId ?? "", alive: you.alive, locked: you.locked, yaw: you.yaw };
@@ -947,16 +950,23 @@ function speedScale(): number {
   return state.twist === "fast" ? TWIST_SPEED_SCALE : 1;
 }
 
-/** Says what is special about the round that is starting: cracks in the floor, or a twist. */
-function announceRound(floor: FloorState): void {
+/** The title card for a round, and what is special about it: cracks in the floor, or a twist. */
+let roundCardTimer: number | null = null;
+function announceRound(volley: number, floor: FloorState): void {
   const twistText: Record<Twist, string> = { none: "", wide: "Wide beams", fast: "Speed boost", dark: "Blackout" };
+  let sub = `${state.players.filter((p) => p.alive).length} players left`;
   if (floor.twist !== "none") {
-    showBanner(twistText[floor.twist], 2600);
+    sub = twistText[floor.twist];
     void audio.announce([{ phrase: `twist_${floor.twist}` }]);
   } else if (floor.cracked.length > 0) {
-    showBanner("The floor is cracking", 2600);
+    sub = "The floor is cracking";
     void audio.announce([{ phrase: "cracking" }]);
   }
+  setText(ui.roundTitle, `Round ${volley}`);
+  setText(ui.roundSub, sub);
+  ui.roundCard.classList.add("show");
+  if (roundCardTimer !== null) clearTimeout(roundCardTimer);
+  roundCardTimer = window.setTimeout(() => ui.roundCard.classList.remove("show"), 2400);
 }
 
 /** The cracked tiles fell. Anyone standing on them fell too. */
