@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { createArena, isStanding, layoutFor, removeTiles, tileIndexAt, type Arena } from "./arena.js";
-import { TWIST_SPEED_SCALE, WALK_SPEED } from "./config.js";
+import { WALK_SPEED } from "./config.js";
 import { stepPose, type MoveInput, type Pose } from "./movement.js";
 
 const still: Pose = { x: 0, z: 0, yaw: 0 };
 const dt = 0.05;
 
 /** Holds an input for some seconds and returns where the player ends up. */
-function hold(input: Omit<MoveInput, "seq">, seconds: number, from: Pose = still, arena: Arena = createArena("frost"), scale = 1): Pose {
+function hold(input: Omit<MoveInput, "seq">, seconds: number, from: Pose = still, arena: Arena = createArena("frost")): Pose {
   let pose = from;
   for (let i = 0; i < Math.round(seconds / dt); i++) {
-    pose = stepPose(pose, { seq: i, ...input }, dt, arena, scale);
+    pose = stepPose(pose, { seq: i, ...input }, dt, arena);
   }
   return pose;
 }
@@ -53,12 +53,6 @@ describe("stepPose", () => {
     expect(speedOf(next)).toBeGreaterThan(0);
     expect(speedOf(next)).toBeLessThan(speedOf(running));
     expect(speedOf(hold({ forward: 0, strafe: 0, yaw: 0 }, 2, running))).toBeLessThan(0.01);
-  });
-
-  it("walks faster in a round with the fast twist", () => {
-    const normal = hold({ forward: 1, strafe: 0, yaw: 0 }, 1);
-    const fast = hold({ forward: 1, strafe: 0, yaw: 0 }, 1, still, createArena("frost"), TWIST_SPEED_SCALE);
-    expect(fast.z).toBeGreaterThan(normal.z * 1.3);
   });
 
   it("cannot walk off the edge of the floor, and stops there", () => {

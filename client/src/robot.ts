@@ -73,7 +73,6 @@ export class Robot implements Actor {
   private recoil = 0;
   /** 1 while the arms hold the gun, fading to 0 once the robot is hit. */
   private aim = 1;
-  private labelHidden = false;
   private plunging = false;
   private plungeDelay = 0;
   private plungeSpeed = 0;
@@ -169,7 +168,7 @@ export class Robot implements Actor {
   setAlive(alive: boolean): void {
     if (alive === this.alive) return;
     this.alive = alive;
-    if (this.label) this.label.visible = alive && !this.labelHidden;
+    if (this.label) this.label.visible = alive;
     if (alive) {
       this.plunging = false;
       this.root.visible = true;
@@ -181,11 +180,6 @@ export class Robot implements Actor {
     } else if (!this.plunging) {
       this.fadeTo(this.actions.death, 0.12);
     }
-  }
-
-  setLabelVisible(visible: boolean): void {
-    this.labelHidden = !visible;
-    if (this.label) this.label.visible = this.alive && visible;
   }
 
   kick(): void {

@@ -11,8 +11,6 @@ export interface Actor {
   setPose(x: number, z: number, yaw: number): void;
   setMoving(moving: boolean): void;
   setAlive(alive: boolean): void;
-  /** Shows or hides the name tag, which goes dark in a blackout round. */
-  setLabelVisible(visible: boolean): void;
   /** Recoil from firing. */
   kick(): void;
   /** Stands back up, as if never hit. Used by the title scene loop. */

@@ -32,9 +32,9 @@ export function facing(yaw: number): { x: number; z: number } {
  * Moves a pose for one simulation step. Used by both the server and the browser's prediction,
  * so they agree. Speed eases toward the wanted speed, which makes starting and stopping feel smooth.
  * A player cannot walk onto a tile that has fallen, or so close to a hole that their feet would hang over it.
- * Walking into the edge slides along it. `speedScale` is above 1 in a round where everyone is fast.
+ * Walking into the edge slides along it.
  */
-export function stepPose(pose: Pose, input: MoveInput, dt: number, arena: Arena, speedScale = 1): Pose {
+export function stepPose(pose: Pose, input: MoveInput, dt: number, arena: Arena): Pose {
   const f = facing(input.yaw);
   // Right-hand direction: forward crossed with up.
   const r = { x: -f.z, z: f.x };
@@ -47,7 +47,7 @@ export function stepPose(pose: Pose, input: MoveInput, dt: number, arena: Arena,
   }
 
   const blend = 1 - Math.exp(-ACCELERATION * dt);
-  const speed = WALK_SPEED * speedScale;
+  const speed = WALK_SPEED;
   const vx = (pose.vx ?? 0) + (mx * speed - (pose.vx ?? 0)) * blend;
   const vz = (pose.vz ?? 0) + (mz * speed - (pose.vz ?? 0)) * blend;
 

@@ -1,5 +1,5 @@
 import type { Beam, Kill } from "./geometry.js";
-import type { BotDifficulty, Twist } from "./config.js";
+import type { BotDifficulty } from "./config.js";
 import type { MapId } from "./maps.js";
 import type { MoveInput } from "./movement.js";
 
@@ -29,11 +29,10 @@ export type ClientMessage =
   | { type: "map"; map: MapId | "random" }
   | { type: "leave" };
 
-/** What the floor looks like in a round: which tiles are gone, which are cracked and about to fall, and the twist. */
+/** What the floor looks like in a round: which tiles are gone, and which are cracked and about to fall. */
 export interface FloorState {
   gone: number[];
   cracked: number[];
-  twist: Twist;
 }
 
 export type Phase = "LOBBY" | "HIDE" | "REVEAL" | "FIRE" | "RESULT" | "MATCH_OVER";

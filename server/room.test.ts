@@ -25,7 +25,7 @@ const FACE_EAST = Math.PI / 2;
 const FACE_WEST = -Math.PI / 2;
 const FACE_NORTH = 0;
 
-/** A fixed source of randomness. With it the first collapse takes the outer edge of the floor, and the twist is "wide". */
+/** A fixed source of randomness. With it the first collapse takes the outer edge of the floor. */
 const FIXED = () => 0.1;
 
 /** Where a spare player stands when a test gave fewer poses than players: on a circle, safely on the floor. */

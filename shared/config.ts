@@ -20,14 +20,6 @@ export const TICK_MS = 50;
 // cracked for the whole round before, so everyone can see them and nobody is caught out by luck alone.
 export const COLLAPSE_EVERY_ROUNDS = 2;
 
-// A round can have a twist, announced when it starts.
-export type Twist = "none" | "wide" | "fast" | "dark";
-/** Wide: every beam is this many times as wide. */
-export const TWIST_BEAM_SCALE = 2.4;
-/** Fast: everyone walks this many times as fast. */
-export const TWIST_SPEED_SCALE = 1.45;
-/** From the second round on, this share of rounds has a twist. */
-export const TWIST_CHANCE = 0.5;
 /** In a public match, how long the lobby waits after the second player joins before it starts. */
 export const QUICK_START_DELAY_MS = 15_000;
 

@@ -9,7 +9,6 @@ import {
   MUZZLE_FORWARD,
   PLAYER_RADIUS,
 } from "../../shared/config.js";
-import type { Twist } from "../../shared/config.js";
 import { DEFAULT_MAP, type MapId } from "../../shared/maps.js";
 import type { Beam } from "../../shared/geometry.js";
 import { facing } from "../../shared/movement.js";
@@ -89,10 +88,6 @@ export class World {
   private maps = new Map<MapId, MapScene>();
   private mapId: MapId | null = null;
   private mapScene!: MapScene;
-  private fogNear = 90;
-  private fogFar = 480;
-  /** The twist of the round being shown: wide beams, fast walkers, or a blackout. */
-  private twist: Twist = "none";
   private beamGroup = new THREE.Group();
   private beams: TimedBeam[] = [];
   private facingMarker: THREE.Mesh;
@@ -207,8 +202,6 @@ export class World {
     this.scene.add(next.root);
     this.scene.background = new THREE.Color(next.background);
     this.scene.fog = next.fog;
-    this.fogNear = next.fog.near;
-    this.fogFar = next.fog.far;
     this.renderer.toneMappingExposure = next.exposure;
     next.setLowPower(this.lowPower);
     next.sun.castShadow = !this.lowPower;
@@ -224,7 +217,6 @@ export class World {
     this.floor = floor;
     this.floor.setState([], []);
     this.scene.add(floor.group);
-    this.applyTwist();
   }
 
   /** One tile let go. A rumble now and then, not one for every tile. */
@@ -237,25 +229,13 @@ export class World {
   }
 
   /** Sets which tiles are gone and which are cracked, exactly as the server says. Nothing moves. */
-  setFloor(gone: readonly number[], cracked: readonly number[], twist: Twist): void {
+  setFloor(gone: readonly number[], cracked: readonly number[]): void {
     this.floor.setState(gone, cracked);
-    this.twist = twist;
-    this.applyTwist();
   }
 
   /** The cracked tiles fall, one after another, into the drop. Returns how many fell. */
   collapse(tiles: readonly number[]): number {
     return this.floor.collapse(tiles);
-  }
-
-  /** A blackout round is dim, and the name tags go dark. */
-  private applyTwist(): void {
-    if (!this.mapScene) return;
-    const dark = this.twist === "dark";
-    this.renderer.toneMappingExposure = this.mapScene.exposure * (dark ? 0.5 : 1);
-    this.mapScene.fog.near = dark ? 30 : this.fogNear;
-    this.mapScene.fog.far = dark ? 140 : this.fogFar;
-    for (const character of this.characters.values()) character.setLabelVisible(!dark);
   }
 
   /** These players were standing on tiles that just fell. They fall with them, into the drop. */
@@ -284,7 +264,6 @@ export class World {
       let character = this.characters.get(state.id);
       if (!character) {
         character = makeActor(state.id, state.name);
-        character.setLabelVisible(this.twist !== "dark");
         this.characters.set(state.id, character);
         this.scene.add(character.root);
       }
@@ -319,8 +298,6 @@ export class World {
    * then fades. A flash and sparks appear at each gun, and a red burst where a beam hits someone.
    */
   fire(beams: Beam[]): void {
-    // A wide round fires beams about twice as thick, so they read as the danger they are.
-    const thickness = this.twist === "wide" ? 2.4 : 1;
     this.clearBeams();
     const now = performance.now();
     let shots = 0;
@@ -333,7 +310,7 @@ export class World {
       const { group, materials } = makeLaser();
       group.position.copy(from);
       group.lookAt(to);
-      group.scale.set(thickness, thickness, 0.0001);
+      group.scale.set(1, 1, 0.0001);
       this.beamGroup.add(group);
       this.beams.push({ group, materials, baseOpacity: materials.map((m) => m.opacity), length, startedAt: now });
 

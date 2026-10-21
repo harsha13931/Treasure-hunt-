@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { createArena, pickCollapse, removeTiles, standingCount, startSpots, tileIndexAt, type Arena } from "../shared/arena.js";
 import {
-  BEAM_HALF_WIDTH,
   BOT_SKILL,
   BotDifficulty,
   COLLAPSE_EVERY_ROUNDS,
@@ -15,10 +14,6 @@ import {
   RESULT_MS,
   ROOM_SIZE,
   TICK_MS,
-  TWIST_BEAM_SCALE,
-  TWIST_CHANCE,
-  TWIST_SPEED_SCALE,
-  type Twist,
 } from "../shared/config.js";
 import { DEFAULT_MAP, isMapId, randomMap, type MapId } from "../shared/maps.js";
 import { resolveVolley, Shooter, Target, Vec2 } from "../shared/geometry.js";
@@ -100,7 +95,6 @@ export class Room {
   private cracked: number[] = [];
   /** The shape of the coming collapse, such as "edge" or "trench". */
   private pattern = "none";
-  private twist: Twist = "none";
   private lastKills = 0;
   /** Who has been knocked out, in order. Used for the final ranking. */
   private knockedOut: string[] = [];
@@ -382,7 +376,6 @@ export class Room {
     this.matchStartedAt = Date.now();
     this.tally = { shot: 0, fell: 0, bots: botCount, people: all.length - botCount };
     this.cracked = [];
-    this.twist = "none";
     this.lastKills = 0;
     this.knockedOut = [];
     this.volley = 0;
@@ -401,12 +394,11 @@ export class Room {
     this.endsAt = Date.now() + HIDE_MS;
 
     // Decide now what this round holds: which tiles will fall at its end (everyone is shown them cracked),
-    // and whether it has a twist. A round after a quiet one always ends in a collapse, so stalling does not pay.
+    // after a quiet one always ends in a collapse, so stalling does not pay.
     const due = this.volley % COLLAPSE_EVERY_ROUNDS === 0 || (this.volley > 1 && this.lastKills === 0);
     const plan = due ? pickCollapse(this.arena, this.random) : { tiles: [], pattern: "none" };
     this.cracked = plan.tiles;
     this.pattern = plan.pattern;
-    this.twist = this.volley >= 2 && this.random() < TWIST_CHANCE ? (["wide", "fast", "dark"] as const)[Math.floor(this.random() * 3)] : "none";
 
     // When no person is left alive, the bots finish the match quickly so spectators are not kept waiting.
     const quick = this.livingPlayers().every((player) => player.bot);
@@ -441,12 +433,12 @@ export class Room {
     for (const player of this.livingPlayers()) {
       if (!player.locked) {
         if (player.bot && player.plan) {
-          player.pose = stepBot(player.pose, player.plan, this.arena, TICK_MS / 1000, this.speedScale());
+          player.pose = stepBot(player.pose, player.plan, this.arena, TICK_MS / 1000);
           if (now >= player.plan.lockAt) player.locked = true;
         } else {
           const input = player.queue.shift();
           if (input) {
-            player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.arena, this.speedScale());
+            player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.arena);
             player.ack = input.seq;
           }
         }
@@ -460,7 +452,7 @@ export class Room {
   private lockPlayer(player: Player, yaw: number): void {
     while (player.queue.length > 0) {
       const input = player.queue.shift() as MoveInput;
-      player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.arena, this.speedScale());
+      player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.arena);
       player.ack = input.seq;
     }
     // Locking in means standing still, so the player stops dead.
@@ -518,9 +510,7 @@ export class Room {
     const shooters: Shooter[] = living.map((player) => ({ id: player.id, pos: player.pose, yaw: player.pose.yaw }));
     const targets: Target[] = living.map((player) => ({ id: player.id, pos: player.pose }));
 
-    // A round with the wide twist fires wider beams.
-    const halfWidth = this.twist === "wide" ? BEAM_HALF_WIDTH * TWIST_BEAM_SCALE : BEAM_HALF_WIDTH;
-    const { beams, eliminated, kills } = resolveVolley(shooters, targets, halfWidth);
+    const { beams, eliminated, kills } = resolveVolley(shooters, targets);
     for (const id of eliminated) {
       const player = this.players.get(id);
       if (player) player.alive = false;
@@ -546,18 +536,13 @@ export class Room {
     this.schedule(RESULT_MS, () => this.enterHide());
   }
 
-  /** How fast everyone walks this round. */
-  private speedScale(): number {
-    return this.twist === "fast" ? TWIST_SPEED_SCALE : 1;
-  }
-
   /** What the floor looks like now, for everyone who needs to draw it. */
   private floorState(): FloorState {
     const gone: number[] = [];
     this.arena.standing.forEach((standing, index) => {
       if (standing === 0) gone.push(index);
     });
-    return { gone, cracked: this.cracked, twist: this.twist };
+    return { gone, cracked: this.cracked };
   }
 
   /**

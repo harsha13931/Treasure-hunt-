@@ -1,5 +1,5 @@
 import { FINAL_TILES, TILE_SPACING, createArena, removeTiles, standingCount, type Arena } from "../../shared/arena.js";
-import { HIDE_MS, PLAYER_COLORS, REVEAL_MS, ROOM_CODE_LENGTH, ROOM_SIZE, TICK_MS, TWIST_SPEED_SCALE, type BotDifficulty, type Twist } from "../../shared/config.js";
+import { HIDE_MS, PLAYER_COLORS, REVEAL_MS, ROOM_CODE_LENGTH, ROOM_SIZE, TICK_MS, type BotDifficulty } from "../../shared/config.js";
 import { DEFAULT_MAP, isMapId } from "../../shared/maps.js";
 import type { Beam, Kill } from "../../shared/geometry.js";
 import { facing, stepPose, type MoveInput, type Pose } from "../../shared/movement.js";
@@ -86,7 +86,6 @@ const state = {
   arena: createArena(DEFAULT_MAP) as Arena,
   /** Tiles that fall after this round. */
   cracked: [] as number[],
-  twist: "none" as Twist,
   me: null as Me | null,
   /** Our position predicted by stepping our own inputs, and the step before it (for smoothing). */
   current: { x: 0, z: 0, yaw: 0, vx: 0, vz: 0 } as Pose,
@@ -827,7 +826,7 @@ function onSelf(message: Extract<ServerMessage, { type: "self" }>): void {
   state.pending = state.pending.filter((p) => p.seq > message.ack);
   let pose: Pose = { x: message.x, z: message.z, yaw: me.yaw, vx: message.vx, vz: message.vz };
   for (const pending of state.pending) {
-    pose = stepPose(pose, pending.input, DT, state.arena, speedScale());
+    pose = stepPose(pose, pending.input, DT, state.arena);
   }
 
   const dx = pose.x - state.current.x;
@@ -941,24 +940,14 @@ function applyFloor(map: MapChoice, floor: FloorState): void {
   state.arena = createArena(map as Parameters<typeof createArena>[0]);
   removeTiles(state.arena, floor.gone);
   state.cracked = floor.cracked;
-  state.twist = floor.twist;
-  world.setFloor(floor.gone, floor.cracked, floor.twist);
+  world.setFloor(floor.gone, floor.cracked);
 }
 
-/** How fast we walk this round. */
-function speedScale(): number {
-  return state.twist === "fast" ? TWIST_SPEED_SCALE : 1;
-}
-
-/** The title card for a round, and what is special about it: cracks in the floor, or a twist. */
+/** The title card for a round, and a word about the floor if some of it is cracked. */
 let roundCardTimer: number | null = null;
 function announceRound(volley: number, floor: FloorState): void {
-  const twistText: Record<Twist, string> = { none: "", wide: "Wide beams", fast: "Speed boost", dark: "Blackout" };
   let sub = `${state.players.filter((p) => p.alive).length} players left`;
-  if (floor.twist !== "none") {
-    sub = twistText[floor.twist];
-    void audio.announce([{ phrase: `twist_${floor.twist}` }]);
-  } else if (floor.cracked.length > 0) {
+  if (floor.cracked.length > 0) {
     sub = "The floor is cracking";
     void audio.announce([{ phrase: "cracking" }]);
   }
@@ -1170,7 +1159,7 @@ function stepInput(): void {
   };
   state.pending.push({ seq: input.seq, input });
   state.previous = { ...state.current };
-  state.current = { ...stepPose(state.current, input, DT, state.arena, speedScale()), yaw: me.yaw };
+  state.current = { ...stepPose(state.current, input, DT, state.arena), yaw: me.yaw };
   state.moving = Math.hypot(state.current.vx ?? 0, state.current.vz ?? 0) > 0.5;
   outbox.push(input);
 }
@@ -1501,8 +1490,7 @@ function renderRoster(): void {
 function phaseText(): string {
   switch (state.phase) {
     case "HIDE":
-      if (!state.me?.alive) return "Watching";
-      return state.twist === "dark" ? "Blackout: hide and aim" : state.twist === "fast" ? "Speed boost: hide and aim" : state.twist === "wide" ? "Wide beams: hide and aim" : "Hide and aim";
+      return state.me?.alive ? "Hide and aim" : "Watching";
     case "REVEAL":
       return "Revealed";
     case "FIRE":

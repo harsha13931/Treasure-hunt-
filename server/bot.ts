@@ -93,7 +93,7 @@ export function planBot(
 }
 
 /** Moves a bot one simulation step toward its plan. */
-export function stepBot(pose: Pose, plan: BotPlan, arena: Arena, dt: number, speedScale = 1): Pose {
+export function stepBot(pose: Pose, plan: BotPlan, arena: Arena, dt: number): Pose {
   // Turn toward the planned aim by the shortest way, at a limited speed.
   const difference = wrap(plan.aimYaw - pose.yaw);
   const turn = Math.max(-TURN_SPEED * dt, Math.min(TURN_SPEED * dt, difference));
@@ -116,7 +116,7 @@ export function stepBot(pose: Pose, plan: BotPlan, arena: Arena, dt: number, spe
     strafe: wx * -Math.cos(yaw) + wz * Math.sin(yaw),
     yaw,
   };
-  return stepPose(pose, input, dt, arena, speedScale);
+  return stepPose(pose, input, dt, arena);
 }
 
 function wrap(angle: number): number {
