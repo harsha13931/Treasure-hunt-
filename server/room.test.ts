@@ -9,7 +9,6 @@ import {
   MIN_RING_RADIUS,
   RING_SHRINK_STEP,
   ringLevels,
-  SONAR_NOISE,
   PLAYER_COLORS,
   ROOM_SIZE,
   START_RING_RADIUS,
@@ -291,50 +290,6 @@ describe("Room", () => {
     }
     expect(lastOf(a, "ring")?.fallen).toEqual([]);
     expect(lastOf(b, "hide")?.you.alive).toBe(true);
-  });
-
-  describe("sonar", () => {
-    function duel() {
-      const room = roomWith([
-        { x: -6, z: 0, yaw: FACE_NORTH },
-        { x: 6, z: 0, yaw: FACE_NORTH },
-        { x: 6, z: -14, yaw: FACE_NORTH },
-      ]);
-      const a = connect(room, "Ann");
-      const b = connect(room, "Ben");
-      const c = connect(room, "Cy");
-      room.handle(a.id, { type: "start" });
-      return { room, a, b, c };
-    }
-
-    it("points roughly at the nearest enemy, says how far, and warns that enemy", () => {
-      const { room, a, b, c } = duel();
-      room.handle(a.id, { type: "sonar" });
-      const result = lastOf(a, "sonar_result");
-      expect(result).toBeDefined();
-      // Ben is due east of Ann, 12 meters away. East is yaw +90 degrees.
-      expect(Math.abs((result?.bearing ?? 0) - Math.PI / 2)).toBeLessThanOrEqual(SONAR_NOISE + 1e-9);
-      expect(result?.band).toBe("mid");
-      expect(countOf(b, "sonar_alert")).toBe(1);
-      expect(countOf(c, "sonar_alert")).toBe(0);
-      expect(countOf(a, "sonar_alert")).toBe(0);
-    });
-
-    it("works once per match", () => {
-      const { room, a } = duel();
-      room.handle(a.id, { type: "sonar" });
-      room.handle(a.id, { type: "sonar" });
-      expect(lastOf(a, "error")?.message).toBe("You already used your sonar ping.");
-      expect(countOf(a, "sonar_result")).toBe(1);
-    });
-
-    it("does not work after locking in", () => {
-      const { room, a } = duel();
-      room.handle(a.id, { type: "lock", yaw: FACE_NORTH });
-      room.handle(a.id, { type: "sonar" });
-      expect(lastOf(a, "error")?.message).toBe("You are locked in.");
-      expect(countOf(a, "sonar_result")).toBe(0);
-    });
   });
 
   describe("reconnecting", () => {

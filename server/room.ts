@@ -4,9 +4,6 @@ import {
   BotDifficulty,
   FIRE_MS,
   FORCED_SHRINK_EVERY_VOLLEYS,
-  SONAR_MID,
-  SONAR_NEAR,
-  SONAR_NOISE,
   HIDE_MS,
   MAX_PLAYERS,
   MIN_PLAYERS,
@@ -35,10 +32,9 @@ export interface MatchSummary {
   bots: number;
   volleys: number;
   seconds: number;
-  /** Players knocked out by a laser, by falling, and sonar pings used. */
+  /** Players knocked out by a laser, and by falling. */
   shot: number;
   fell: number;
-  sonar: number;
   /** Radius of the ring when the match ended. */
   finalRadius: number;
   winner: "person" | "bot" | "none";
@@ -69,8 +65,6 @@ interface Player {
   ack: number;
   /** What a bot has decided to do. Always null for people. */
   plan: BotPlan | null;
-  /** Each player has one sonar ping per match. */
-  sonarUsed: boolean;
   /** Which of PLAYER_COLORS this player wears. No two players in a room share one. */
   color: number;
   /** A secret only this player's browser knows, so no one else can take their seat when reconnecting. */
@@ -117,7 +111,7 @@ export class Room {
   private onEmpty: (() => void) | null;
   private onMatchEnd: ((summary: MatchSummary) => void) | null;
   private matchStartedAt = 0;
-  private tally = { shot: 0, fell: 0, sonar: 0, bots: 0, people: 0 };
+  private tally = { shot: 0, fell: 0, bots: 0, people: 0 };
 
   constructor(code: string, options: RoomOptions = {}) {
     this.code = code;
@@ -268,15 +262,6 @@ export class Room {
         return;
       }
 
-      case "sonar": {
-        if (this.phase !== "HIDE") throw new Error("Sonar only works while you are hiding.");
-        if (!player.alive) throw new Error("You are out of the game.");
-        if (player.locked) throw new Error("You are locked in.");
-        if (player.sonarUsed) throw new Error("You already used your sonar ping.");
-        this.pingSonar(player);
-        return;
-      }
-
       case "start": {
         if (player.id !== this.hostId) throw new Error("Only the host can start the match.");
         if (this.phase !== "LOBBY" && this.phase !== "MATCH_OVER") throw new Error("A match is already running.");
@@ -320,7 +305,6 @@ export class Room {
       queue: [],
       ack: 0,
       plan: null,
-      sonarUsed: false,
       color: this.freeColor(),
       token: randomBytes(12).toString("hex"),
       connected: true,
@@ -346,11 +330,10 @@ export class Room {
       player.queue = [];
       player.ack = 0;
       player.plan = null;
-      player.sonarUsed = false;
       player.pose = this.spawn(index, all.length);
     });
     this.matchStartedAt = Date.now();
-    this.tally = { shot: 0, fell: 0, sonar: 0, bots: botCount, people: all.length - botCount };
+    this.tally = { shot: 0, fell: 0, bots: botCount, people: all.length - botCount };
     this.radius = START_RING_RADIUS;
     this.noKillStreak = 0;
     this.volleysSinceShrink = 0;
@@ -518,30 +501,6 @@ export class Room {
     this.schedule(RESULT_MS, () => this.enterHide());
   }
 
-  /**
-   * Answers a sonar ping with the rough direction and distance of the nearest enemy, and warns that enemy.
-   * The answer is off by up to SONAR_NOISE either way, and it is the picture at this moment: people keep moving.
-   */
-  private pingSonar(player: Player): void {
-    player.sonarUsed = true;
-    this.tally.sonar += 1;
-    let nearest: Player | null = null;
-    let best = Infinity;
-    for (const other of this.livingPlayers()) {
-      if (other.id === player.id) continue;
-      const distance = Math.hypot(other.pose.x - player.pose.x, other.pose.z - player.pose.z);
-      if (distance < best) {
-        best = distance;
-        nearest = other;
-      }
-    }
-    if (!nearest) return;
-    const truth = Math.atan2(nearest.pose.x - player.pose.x, nearest.pose.z - player.pose.z);
-    const bearing = truth + (Math.random() * 2 - 1) * SONAR_NOISE;
-    player.send({ type: "sonar_result", bearing, band: best < SONAR_NEAR ? "near" : best < SONAR_MID ? "mid" : "far" });
-    nearest.send({ type: "sonar_alert" });
-  }
-
   /** The radius the floor will have after the next shrink. */
   private nextRadius(): number {
     return Math.max(MIN_RING_RADIUS, this.radius - RING_SHRINK_STEP);
@@ -610,7 +569,6 @@ export class Room {
       seconds: Math.round((Date.now() - this.matchStartedAt) / 1000),
       shot: this.tally.shot,
       fell: this.tally.fell,
-      sonar: this.tally.sonar,
       finalRadius: this.radius,
       winner: winnerId === null ? "none" : this.players.get(winnerId)?.bot ? "bot" : "person",
     });

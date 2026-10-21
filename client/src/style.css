@@ -368,68 +368,6 @@ button:focus-visible {
   width: 100%;
 }
 
-.controls-buttons {
-  display: flex;
-  gap: 8px;
-}
-
-.controls-buttons .btn:not(.primary) {
-  width: 38%;
-}
-
-.controls-buttons .btn:disabled {
-  opacity: 0.45;
-}
-
-.sonar-compass {
-  position: absolute;
-  left: 14px;
-  top: 270px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 12px 6px 6px;
-  font-size: 0.85rem;
-  color: var(--ink);
-  background: rgba(12, 20, 32, 0.78);
-  border-radius: 999px;
-  pointer-events: none;
-  animation: feed-in 0.3s ease both;
-}
-
-.sonar-dial {
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  border: 2px solid #5fd0ff;
-  box-shadow: 0 0 14px rgba(95, 208, 255, 0.55);
-}
-
-.sonar-arrow {
-  display: block;
-  font-size: 1.3rem;
-  line-height: 1;
-  color: #8fe3ff;
-}
-
-body.touch .sonar-compass {
-  left: 8px;
-  top: 110px;
-  font-size: 0.72rem;
-}
-
-body.touch .sonar-dial {
-  width: 36px;
-  height: 36px;
-}
-
-body.touch .controls-buttons .btn {
-  padding: 8px 6px;
-  font-size: 0.85rem;
-}
-
 .spectating {
   position: absolute;
   left: 50%;

@@ -37,8 +37,6 @@ const STICK_TURN_SPEED = 1.9;
 /** How long a line stays in the elimination feed. */
 const FEED_MS = 7000;
 const FEED_MAX = 5;
-/** How long the sonar arrow stays up. */
-const SONAR_SHOW_MS = 9000;
 const isTouchDevice = window.matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
 
 interface Me {
@@ -99,11 +97,6 @@ const state = {
   showResults: false,
   /** The player an eliminated spectator is watching. */
   spectateId: null as string | null,
-  /** The last sonar answer: a world bearing, how far, and when to stop showing it. */
-  sonarBearing: null as number | null,
-  sonarBand: "" as string,
-  sonarUntil: 0,
-  sonarUsed: false,
 };
 
 const keys = new Set<string>();
@@ -169,10 +162,6 @@ const ui = {
   controls: byId("controls"),
   controlsHint: byId("controls-hint"),
   lock: byId<HTMLButtonElement>("lock"),
-  sonar: byId<HTMLButtonElement>("sonar"),
-  sonarCompass: byId("sonar-compass"),
-  sonarArrow: byId("sonar-arrow"),
-  sonarText: byId("sonar-text"),
   spectating: byId("spectating"),
   specPrev: byId<HTMLButtonElement>("spec-prev"),
   specNext: byId<HTMLButtonElement>("spec-next"),
@@ -349,7 +338,6 @@ ui.again.addEventListener("click", () => {
 ui.toMenu.addEventListener("click", () => leaveRoom());
 
 ui.lock.addEventListener("click", () => lockIn());
-ui.sonar.addEventListener("click", () => useSonar());
 
 ui.musicToggle.addEventListener("click", () => {
   settings.music = !audio.isMusicOn;
@@ -393,7 +381,6 @@ window.addEventListener("keydown", (event) => {
   if (isGameKey(event.code)) event.preventDefault();
   keys.add(event.code);
   if (event.code === "Space" && !event.repeat) lockIn();
-  if (event.code === "KeyF" && !event.repeat) useSonar();
   // Eliminated players use the turn keys to flip between the people still playing.
   if (state.screen === "game" && state.me?.alive !== true && !event.repeat) {
     if (event.code === "KeyQ" || event.code === "ArrowLeft") cycleSpectate(-1);
@@ -591,20 +578,6 @@ function handle(message: ServerMessage): void {
       onFire(message.beams, message.eliminated, message.kills ?? []);
       break;
 
-    case "sonar_result":
-      state.sonarBearing = message.bearing;
-      state.sonarBand = message.band;
-      state.sonarUntil = Date.now() + SONAR_SHOW_MS;
-      audio.playSonar();
-      haptic(30);
-      break;
-
-    case "sonar_alert":
-      audio.playSonarAlert();
-      haptic([60, 50, 60]);
-      showToast("Sonar ping detected! Someone is close.");
-      break;
-
     case "ring":
       state.radius = message.radius;
       onFallen(message.fallen ?? [], world.setRing(message.radius) > 0);
@@ -646,11 +619,6 @@ function onLobby(): void {
 function onHide(message: Extract<ServerMessage, { type: "hide" }>): void {
   showScreen("game");
   state.phase = "HIDE";
-  if (message.volley === 1) {
-    // A new match: the sonar ping is ready again.
-    state.sonarUsed = false;
-    state.sonarBearing = null;
-  }
   audio.setIntensity(0.45);
   state.showResults = false;
   state.volley = message.volley;
@@ -1002,14 +970,6 @@ function lockIn(): void {
   renderHud();
 }
 
-/** Spends the one sonar ping of the match. */
-function useSonar(): void {
-  if (!canTurn() || state.sonarUsed) return;
-  state.sonarUsed = true;
-  send({ type: "sonar" });
-  renderHud();
-}
-
 /** True while the local player can still move or turn. */
 function canTurn(): boolean {
   return state.phase === "HIDE" && state.me?.alive === true && !state.me.locked;
@@ -1135,18 +1095,6 @@ function renderHud(): void {
   ui.controls.classList.toggle("hidden", !hiding);
   ui.lock.disabled = me?.locked === true;
   setText(ui.lock, me?.locked ? "Locked in" : "Lock in");
-  ui.sonar.disabled = state.sonarUsed || me?.locked === true;
-  setText(ui.sonar, state.sonarUsed ? "Used" : "Sonar");
-
-  // The sonar arrow keeps pointing at the same spot in the world, so it swings as you turn.
-  const sonarLive = state.sonarBearing !== null && Date.now() < state.sonarUntil && hiding;
-  ui.sonarCompass.classList.toggle("hidden", !sonarLive);
-  if (sonarLive && me) {
-    const turn = -((state.sonarBearing as number) - me.yaw);
-    ui.sonarArrow.style.transform = `rotate(${turn}rad)`;
-    const label = state.sonarBand === "near" ? "Very close" : state.sonarBand === "mid" ? "Medium range" : "Far away";
-    setText(ui.sonarText, `Nearest enemy · ${label}`);
-  }
   const controlsHelp = isTouchDevice
     ? "Left side walks · right side turns"
     : "WASD to walk · mouse to look (click the screen) · Space to lock in";
