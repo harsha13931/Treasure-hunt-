@@ -46,6 +46,7 @@ export class Stickman {
   private alive = true;
   private recoil = 0;
   /** Set when the ice under this figure breaks. It waits a moment, then drops into the crevasse. */
+  private labelHidden = false;
   private plunging = false;
   private plungeDelay = 0;
   private plungeSpeed = 0;
@@ -146,7 +147,12 @@ export class Stickman {
       this.root.visible = true;
       this.root.position.y = 0;
     }
-    if (this.label) this.label.visible = alive;
+    if (this.label) this.label.visible = alive && !this.labelHidden;
+  }
+
+  setLabelVisible(visible: boolean): void {
+    this.labelHidden = !visible;
+    if (this.label) this.label.visible = this.alive && visible;
   }
 
   /** Kick back from firing: the body jolts away from the muzzle, then settles. */

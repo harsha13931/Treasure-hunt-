@@ -1,21 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createArena, FINAL_TILES, layoutFor, tileIndexAt } from "../shared/arena.js";
 import {
   FIRE_MS,
   HIDE_MS,
+  PLAYER_COLORS,
   QUICK_START_DELAY_MS,
+  RECONNECT_GRACE_MS,
   REVEAL_MS,
   RESULT_MS,
-  RECONNECT_GRACE_MS,
-  MIN_RING_RADIUS,
-  RING_SHRINK_STEP,
-  ringLevels,
-  PLAYER_COLORS,
   ROOM_SIZE,
-  START_RING_RADIUS,
   TICK_MS,
   WALK_SPEED,
 } from "../shared/config.js";
-import { startPoseFor, type Pose } from "../shared/movement.js";
+import type { Pose } from "../shared/movement.js";
 import type { ServerMessage } from "../shared/protocol.js";
 import { Room, type MatchSummary } from "./room.js";
 
@@ -28,9 +25,18 @@ const FACE_EAST = Math.PI / 2;
 const FACE_WEST = -Math.PI / 2;
 const FACE_NORTH = 0;
 
+/** A fixed source of randomness. With it the first collapse takes the outer edge of the floor, and the twist is "wide". */
+const FIXED = () => 0.1;
+
+/** Where a spare player stands when a test gave fewer poses than players: on a circle, safely on the floor. */
+function spare(index: number, count: number): Pose {
+  const angle = (index / Math.max(1, count)) * Math.PI * 2;
+  return { x: Math.cos(angle) * 9, z: Math.sin(angle) * 9, yaw: 0, vx: 0, vz: 0 };
+}
+
 /** Builds a room where the players start at exactly the poses given. */
-function roomWith(poses: Pose[]) {
-  return new Room("TEST1", { spawn: (index, count) => poses[index] ?? startPoseFor(index, count) });
+function roomWith(poses: Pose[], random: () => number = FIXED) {
+  return new Room("TEST1", { random, spawn: (index, count) => poses[index] ?? spare(index, count) });
 }
 
 function connect(room: Room, name: string): Client {
@@ -136,13 +142,13 @@ describe("Room", () => {
     expect(x(batch.a)).toBeCloseTo(x(single.a), 6);
   });
 
-  it("keeps a moving player inside the ring", () => {
+  it("keeps a moving player on the floor", () => {
     const room = roomWith([
       { x: 0, z: 0, yaw: FACE_EAST },
       { x: 0, z: 1, yaw: FACE_NORTH },
     ]);
     const a = connect(room, "Ann");
-    const b = connect(room, "Ben");
+    connect(room, "Ben");
     room.handle(a.id, { type: "start" });
 
     for (let seq = 1; seq <= 200; seq++) {
@@ -150,8 +156,9 @@ describe("Room", () => {
       vi.advanceTimersByTime(TICK_MS);
     }
     const self = lastOf(a, "self");
-    expect(Math.hypot(self?.x ?? 0, self?.z ?? 0)).toBeLessThanOrEqual(START_RING_RADIUS);
-    expect(b.id).toBeDefined();
+    const layout = layoutFor("frost");
+    expect(tileIndexAt(layout, self?.x ?? 0, self?.z ?? 0)).toBeGreaterThanOrEqual(0);
+    expect(Math.hypot(self?.x ?? 0, self?.z ?? 0)).toBeLessThan(layout.extent);
   });
 
   it("reveals as soon as every living player has locked in", () => {
@@ -220,7 +227,7 @@ describe("Room", () => {
     expect(countOf(a, "hide")).toBe(1);
   });
 
-  it("when nobody is hit for two volleys in a row, the ring shrinks one step", () => {
+  it("cracks part of the floor in the second round, shows it to everyone, and drops it at the end of the round", () => {
     const room = roomWith([
       { x: -5, z: 0, yaw: FACE_WEST },
       { x: 5, z: 0, yaw: FACE_EAST },
@@ -228,18 +235,28 @@ describe("Room", () => {
     const a = connect(room, "Ann");
     const b = connect(room, "Ben");
     room.handle(a.id, { type: "start" });
-
     const volleyLength = REVEAL_MS + FIRE_MS + RESULT_MS;
 
+    // Round one: nothing is cracked.
+    expect(lastOf(a, "hide")?.floor.cracked).toEqual([]);
     lockAll(room, [a, b], [FACE_WEST, FACE_EAST]);
     vi.advanceTimersByTime(volleyLength);
-    expect(countOf(a, "ring")).toBe(0);
+    expect(countOf(a, "collapse")).toBe(0);
+
+    // Round two: tiles are shown cracked from the start, the same for everyone, and nothing has fallen yet.
+    const hide = lastOf(a, "hide");
     expect(countOf(a, "hide")).toBe(2);
+    expect(hide?.floor.cracked.length).toBeGreaterThan(0);
+    expect(hide?.floor.gone).toEqual([]);
+    expect(lastOf(b, "hide")?.floor.cracked).toEqual(hide?.floor.cracked);
 
     lockAll(room, [a, b], [FACE_WEST, FACE_EAST]);
     vi.advanceTimersByTime(volleyLength);
-    expect(lastOf(a, "ring")?.radius).toBeCloseTo(START_RING_RADIUS - RING_SHRINK_STEP, 6);
-    expect(room.ringRadius).toBeCloseTo(START_RING_RADIUS - RING_SHRINK_STEP, 6);
+    const collapse = lastOf(a, "collapse");
+    expect(collapse?.tiles).toEqual(hide?.floor.cracked);
+    expect(room.tilesStanding).toBe(layoutFor("frost").tiles.length - (collapse?.tiles.length ?? 0));
+    // The next round shows those tiles as gone.
+    expect(lastOf(a, "hide")?.floor.gone).toEqual([...(collapse?.tiles ?? [])].sort((x, y) => x - y));
   });
 
   it("a player who leaves during the hide phase counts as out", () => {
@@ -269,29 +286,29 @@ describe("Room", () => {
     expect(lastOf(a, "error")?.message).toBe("You can only lock in during the hide phase.");
   });
 
-  it("a player standing on the outer ice when it breaks falls and is out", () => {
-    const edge = START_RING_RADIUS - 1; // as far out as the ring lets anyone stand
+  it("a player standing on a tile when it falls goes down with it and is out", () => {
+    // Tile (4, 0) is a corner of the floor, and the first collapse takes the outer edge.
+    const corner = layoutFor("frost").tiles.find((t) => t.q === 4 && t.r === 0)!;
     const room = roomWith([
-      { x: -5, z: 0, yaw: FACE_NORTH },
-      { x: 5, z: 0, yaw: FACE_NORTH },
-      { x: edge, z: 0, yaw: FACE_EAST },
+      { x: 0, z: 0, yaw: FACE_NORTH },
+      { x: -5, z: -4, yaw: FACE_WEST },
+      { x: corner.x, z: corner.z, yaw: FACE_EAST },
     ]);
     const a = connect(room, "Ann");
     const b = connect(room, "Ben");
     const c = connect(room, "Cy");
     room.handle(a.id, { type: "start" });
     const volleyLength = REVEAL_MS + FIRE_MS + RESULT_MS;
-    const lock = () => lockAll(room, [a, b, c], [FACE_NORTH, FACE_NORTH, FACE_EAST]);
+    const lock = () => lockAll(room, [a, b, c], [FACE_NORTH, FACE_WEST, FACE_EAST]);
 
-    // Nobody can fall until the ice actually breaks, and nobody is warned ahead of time.
     lock();
     vi.advanceTimersByTime(volleyLength);
-    expect(countOf(a, "ring")).toBe(0);
-    expect(JSON.stringify(lastOf(a, "hide"))).not.toMatch(/edge|nextRadius/);
+    expect(countOf(a, "collapse")).toBe(0);
+    expect(lastOf(a, "hide")?.floor.cracked).toContain(corner.index);
 
     lock();
-    vi.advanceTimersByTime(REVEAL_MS + FIRE_MS + RESULT_MS);
-    expect(lastOf(a, "ring")?.fallen).toEqual([c.id]);
+    vi.advanceTimersByTime(volleyLength);
+    expect(lastOf(a, "collapse")?.fallen).toEqual([c.id]);
 
     // Cy is out for good and the other two carry on.
     expect(lastOf(c, "hide")?.you.alive).toBe(false);
@@ -299,20 +316,20 @@ describe("Room", () => {
     expect(lastOf(a, "hide")?.you.alive).toBe(true);
   });
 
-  it("a player inside the new edge survives the floor breaking", () => {
+  it("a player on a tile that does not fall survives the collapse", () => {
     const room = roomWith([
-      { x: -5, z: 0, yaw: FACE_NORTH },
-      { x: START_RING_RADIUS - RING_SHRINK_STEP - 0.5, z: 0, yaw: FACE_EAST },
+      { x: 0, z: 0, yaw: FACE_NORTH },
+      { x: -5, z: 0, yaw: FACE_WEST },
     ]);
     const a = connect(room, "Ann");
     const b = connect(room, "Ben");
     room.handle(a.id, { type: "start" });
     const volleyLength = REVEAL_MS + FIRE_MS + RESULT_MS;
     for (let i = 0; i < 2; i++) {
-      lockAll(room, [a, b], [FACE_NORTH, FACE_EAST]);
+      lockAll(room, [a, b], [FACE_NORTH, FACE_WEST]);
       vi.advanceTimersByTime(volleyLength);
     }
-    expect(lastOf(a, "ring")?.fallen).toEqual([]);
+    expect(lastOf(a, "collapse")?.fallen).toEqual([]);
     expect(lastOf(b, "hide")?.you.alive).toBe(true);
   });
 
@@ -439,7 +456,7 @@ describe("Room", () => {
     expect(colorOf(c.id)).toBe(benColor);
   });
 
-  it("does not announce a collapse once the ring is as small as it gets", () => {
+  it("keeps breaking the floor round after round until only the last tiles are left, then stops", () => {
     const room = roomWith([
       { x: -1, z: 0, yaw: FACE_NORTH },
       { x: 1, z: 0, yaw: FACE_NORTH },
@@ -448,16 +465,19 @@ describe("Room", () => {
     const b = connect(room, "Ben");
     room.handle(a.id, { type: "start" });
     const volleyLength = REVEAL_MS + FIRE_MS + RESULT_MS;
-    // Nobody is ever hit, so the ring shrinks every second volley until it cannot go further.
+    // Nobody is ever hit, so the floor keeps breaking, every round after a quiet one.
     for (let i = 0; i < 30; i++) {
       lockAll(room, [a, b], [FACE_NORTH, FACE_NORTH]);
       vi.advanceTimersByTime(volleyLength);
     }
-    expect(room.ringRadius).toBeCloseTo(MIN_RING_RADIUS, 6);
-    const rings = a.messages.filter((m) => m.type === "ring");
-    // One message per real shrink, and none after the last circle was reached.
-    expect(rings.length).toBe(ringLevels().length - 1);
-    for (const ring of rings) expect(ring.radius).toBeLessThan(START_RING_RADIUS);
+    expect(room.tilesStanding).toBe(FINAL_TILES);
+    // Once the last tiles are reached there is nothing left to crack, so nothing more is announced.
+    const before = countOf(a, "collapse");
+    lockAll(room, [a, b], [FACE_NORTH, FACE_NORTH]);
+    vi.advanceTimersByTime(volleyLength);
+    expect(countOf(a, "collapse")).toBe(before);
+    expect(lastOf(a, "hide")?.floor.cracked).toEqual([]);
+    expect(lastOf(a, "hide")?.you.alive).toBe(true);
   });
 
   describe("arenas", () => {
@@ -514,33 +534,34 @@ describe("Room", () => {
     expect(lastOf(a, "fire")?.kills).toEqual([{ victim: b.id, killers: [a.id] }]);
   });
 
-  it("also shrinks the ring every few volleys, even when there are kills", () => {
+  it("breaks the floor every second round, even when there are kills, and not in the rounds between", () => {
     // Five players in a row. Player 0 faces east and knocks out one more player each volley,
     // so there is a kill every time and the "nobody was hit" rule never applies.
     const xs = [-8, -4, 0, 4, 8];
     const room = new Room("FORCE", {
+      random: FIXED,
       spawn: (index) => ({ x: xs[index], z: 0, yaw: index === 0 ? FACE_EAST : FACE_NORTH, vx: 0, vz: 0 }),
     });
     const clients = ["Ann", "Ben", "Cy", "Di", "Ed"].map((name) => connect(room, name));
     room.handle(clients[0].id, { type: "start" });
     const volleyLength = REVEAL_MS + FIRE_MS + RESULT_MS;
-
     const lockAlive = () =>
       clients.forEach((client, i) => room.handle(client.id, { type: "lock", yaw: i === 0 ? FACE_EAST : FACE_NORTH }));
 
     lockAlive();
+    expect(lastOf(clients[0], "hide")?.floor.cracked).toEqual([]);
     vi.advanceTimersByTime(volleyLength);
     expect(lastOf(clients[0], "fire")?.eliminated).toHaveLength(1);
-    lockAlive();
-    vi.advanceTimersByTime(volleyLength);
-    expect(lastOf(clients[0], "fire")?.eliminated).toHaveLength(1);
-    expect(countOf(clients[0], "ring")).toBe(0);
 
-    // The third volley also has a kill, and the ring closes in anyway.
+    // Round two is an even round, so it ends in a collapse that was shown from its start.
+    expect(lastOf(clients[0], "hide")?.floor.cracked.length).toBeGreaterThan(0);
     lockAlive();
-    vi.advanceTimersByTime(REVEAL_MS + FIRE_MS);
+    vi.advanceTimersByTime(volleyLength);
     expect(lastOf(clients[0], "fire")?.eliminated).toHaveLength(1);
-    expect(lastOf(clients[0], "ring")?.radius).toBeCloseTo(START_RING_RADIUS - RING_SHRINK_STEP, 6);
+    expect(countOf(clients[0], "collapse")).toBe(1);
+
+    // Round three had a hit before it and is odd, so nothing is cracked.
+    expect(lastOf(clients[0], "hide")?.floor.cracked).toEqual([]);
   });
 
   it("ranks the winner first and the first player knocked out last", () => {
@@ -671,7 +692,7 @@ describe("Room", () => {
       expect(reveal?.players.filter((p) => p.name.startsWith("Bot "))).toHaveLength(ROOM_SIZE - 1);
     });
 
-    it("bots walk, stay inside the ring, and lock in on their own when the timer ends", () => {
+    it("bots walk, stay on the floor, and lock in on their own when the timer ends", () => {
       const room = new Room("BOTS6");
       const a = connect(room, "Ann");
       room.handle(a.id, { type: "start", bots: 7 });
@@ -679,8 +700,9 @@ describe("Room", () => {
       vi.advanceTimersByTime(HIDE_MS);
       const reveal = lastOf(a, "reveal");
       expect(reveal).toBeDefined();
+      const layout = layoutFor(reveal?.map ?? "frost");
       for (const player of reveal?.players ?? []) {
-        expect(Math.hypot(player.x, player.z)).toBeLessThanOrEqual(START_RING_RADIUS);
+        expect(tileIndexAt(layout, player.x, player.z)).toBeGreaterThanOrEqual(0);
       }
     });
 

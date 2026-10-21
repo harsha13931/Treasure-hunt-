@@ -7,17 +7,15 @@ import {
   BEAM_HALF_WIDTH,
   BEAM_HEIGHT,
   MUZZLE_FORWARD,
-  PIT_DEPTH,
   PLAYER_RADIUS,
-  ringLevels,
-  START_RING_RADIUS,
 } from "../../shared/config.js";
+import type { Twist } from "../../shared/config.js";
 import { DEFAULT_MAP, type MapId } from "../../shared/maps.js";
 import type { Beam } from "../../shared/geometry.js";
 import { facing } from "../../shared/movement.js";
-import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { Effects } from "./effects.js";
-import { BAR_COUNT, SLAB_THICKNESS } from "./maps/common.js";
+import { layoutFor } from "../../shared/arena.js";
+import { Floor } from "./floor.js";
 import { buildMap, type MapScene } from "./maps/index.js";
 import type { Actor } from "./actor.js";
 import { Robot, robotReady } from "./robot.js";
@@ -51,22 +49,7 @@ interface TimedBeam {
   startedAt: number;
 }
 
-interface Tile {
-  mesh: THREE.Mesh;
-  /** Index of the floor level this piece belongs to. 0 is the outermost ring. */
-  level: number;
-  falling: boolean;
-  delay: number;
-  /** Where the piece rests while the floor is whole. */
-  home: THREE.Vector3;
-  velocity: THREE.Vector3;
-  spin: THREE.Vector3;
-}
-
-const CAGE_CLOSE_SPEED = 3.2; // meters per second that the cage closes in
-/** How quickly the camera catches up with the player's facing, per second. Lower is calmer. */
 const CAMERA_TURN_RATE = 5;
-const CAGE_CLOSE_DELAY = 0.7; // seconds the cage waits while the floor breaks away
 const MIN_PIXEL_RATIO = 0.7;
 const SLOW_MOTION_SCALE = 0.3;
 const BEAM_GROW_MS = 140;
@@ -85,8 +68,7 @@ const INTRO_HOLD = 1.0;
 const INTRO_REVEAL_AFTER = 1.5;
 
 /**
- * The pit, the multi-level floor and the cage that closes in, the stick men, the lasers,
- * and the effects. It draws what the server reports. It never decides hits or deaths.
+ * The arena (scenery, tile floor and fence), the robots, the lasers and the effects. It draws what the server reports. It never decides hits or deaths.
  */
 export class World {
   /** Called when the world wants a sound played. */
@@ -100,19 +82,17 @@ export class World {
   private effects: Effects;
   private touchDevice = window.matchMedia("(pointer: coarse)").matches;
 
-  private levels = ringLevels();
-  private floorGroup = new THREE.Group();
-  private tiles: Tile[] = [];
-  /** Each floor level that is still whole, drawn as a single mesh. */
-  private levelMeshes = new Map<number, THREE.Mesh>();
-  /** The arenas built so far. Each is built the first time it is needed, then kept. */
+  /** The floor of the arena being played in. Each arena builds its own, once, and keeps it. */
+  private floors = new Map<MapId, Floor>();
+  private floor!: Floor;
+  /** Arenas built so far. Each is built the first time it is needed, then kept. */
   private maps = new Map<MapId, MapScene>();
   private mapId: MapId | null = null;
   private mapScene!: MapScene;
-  private targetRadius = START_RING_RADIUS;
-  private shownRadius = START_RING_RADIUS;
-  private closeDelay = 0;
-
+  private fogNear = 90;
+  private fogFar = 480;
+  /** The twist of the round being shown: wide beams, fast walkers, or a blackout. */
+  private twist: Twist = "none";
   private beamGroup = new THREE.Group();
   private beams: TimedBeam[] = [];
   private facingMarker: THREE.Mesh;
@@ -147,7 +127,6 @@ export class World {
   private slowLeft = 0;
   private slowSeconds = 0;
   private lowPower = false;
-  private fallingCount = 0;
   /** Which way the follow camera looks. It trails the player's real facing a little, so turning feels calm. */
   private cameraYaw = 0;
   private followActive = false;
@@ -175,11 +154,10 @@ export class World {
     this.host.appendChild(this.renderer.domElement);
 
     this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 1600);
-    this.scene.add(this.floorGroup);
+    this.effects = new Effects(this.scene);
     this.setMap(DEFAULT_MAP);
 
     this.scene.add(this.beamGroup);
-    this.effects = new Effects(this.scene);
 
     // A faint arrow on the floor showing which way the local player faces. There is no laser line.
     this.facingMarker = new THREE.Mesh(
@@ -206,7 +184,6 @@ export class World {
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(this.host);
     this.resize();
-    this.applyRadius(START_RING_RADIUS);
   }
 
   get domElement(): HTMLCanvasElement {
@@ -222,7 +199,7 @@ export class World {
     if (this.mapScene) this.scene.remove(this.mapScene.root);
     let next = this.maps.get(id);
     if (!next) {
-      next = buildMap(id, { touch: this.touchDevice, levels: this.levels });
+      next = buildMap(id, { touch: this.touchDevice, layout: layoutFor(id) });
       this.maps.set(id, next);
     }
     this.mapId = id;
@@ -230,75 +207,58 @@ export class World {
     this.scene.add(next.root);
     this.scene.background = new THREE.Color(next.background);
     this.scene.fog = next.fog;
+    this.fogNear = next.fog.near;
+    this.fogFar = next.fog.far;
     this.renderer.toneMappingExposure = next.exposure;
     next.setLowPower(this.lowPower);
     next.sun.castShadow = !this.lowPower;
 
-    this.targetRadius = START_RING_RADIUS;
-    this.shownRadius = START_RING_RADIUS;
-    this.buildFloor();
-    this.applyRadius(START_RING_RADIUS);
+    // Each arena has its own floor, built once.
+    let floor = this.floors.get(id);
+    if (!floor) {
+      const dust = id === "frost" ? "#e8f0f8" : id === "forest" ? "#b9b79a" : "#d9b48a";
+      floor = new Floor(layoutFor(id), next, this.effects, dust, () => this.floorBroke());
+      this.floors.set(id, floor);
+    }
+    if (this.floor) this.scene.remove(this.floor.group);
+    this.floor = floor;
+    this.floor.setState([], []);
+    this.scene.add(floor.group);
+    this.applyTwist();
   }
 
-  /**
-   * Sets the cage radius. When it gets smaller, the floor levels outside it break away and fall,
-   * and the cage closes in. Pass `animate: false` to jump straight to the new state.
-   * Returns how many pieces of floor broke away, which is zero when nothing changed.
-   */
-  setRing(radius: number, animate = true): number {
-    if (Math.abs(radius - this.targetRadius) < 0.01) return 0;
-
-    if (radius > this.targetRadius) {
-      // A new match: the floor is whole again.
-      this.targetRadius = radius;
-      this.shownRadius = radius;
-      this.buildFloor();
-      this.applyRadius(radius);
-      return 0;
-    }
-
-    this.targetRadius = radius;
-    // A level that is about to break splits into slabs first, so the slabs can fall one by one.
-    for (const level of [...this.levelMeshes.keys()]) {
-      if (this.levels[level] <= radius + 0.01) continue;
-      if (animate) this.explodeLevel(level);
-      else {
-        this.discardLevelMesh(this.levelMeshes.get(level) as THREE.Mesh);
-        this.levelMeshes.delete(level);
-      }
-    }
-    const lost = this.tiles.filter((tile) => !tile.falling && this.levels[tile.level] > radius + 0.01);
-    if (!animate) {
-      for (const tile of lost) this.removeTile(tile);
-      this.shownRadius = radius;
-      this.applyRadius(radius);
-      return 0;
-    }
-
-    this.fallingCount += lost.length;
-    for (const tile of lost) {
-      tile.falling = true;
-      tile.delay = Math.random() * 0.8;
-      const outward = new THREE.Vector3(tile.home.x, 0, tile.home.z);
-      if (outward.lengthSq() < 0.01) outward.set(rand(-1, 1), 0, rand(-1, 1));
-      outward.normalize();
-      tile.velocity.copy(outward).multiplyScalar(1 + Math.random() * 2.5);
-      tile.spin.set(rand(-1.8, 1.8), rand(-0.8, 0.8), rand(-1.8, 1.8));
-      if (tile.mesh.userData.rim) {
-        // The glowing edge is one big ring, so it drops straight down instead of flipping across the arena.
-        tile.velocity.set(0, 0, 0);
-        tile.spin.set(0, 0, 0);
-      }
-    }
-    if (lost.length > 0) {
-      this.closeDelay = CAGE_CLOSE_DELAY;
-      this.shake(0.9);
-      this.onSound?.("collapse");
-    }
-    return lost.length;
+  /** One tile let go. A rumble now and then, not one for every tile. */
+  private breakSoundCooldown = 0;
+  private floorBroke(): void {
+    if (performance.now() - this.breakSoundCooldown < 600) return;
+    this.breakSoundCooldown = performance.now();
+    this.onSound?.("collapse");
+    this.shake(0.55);
   }
 
-  /** These players were standing on ice that just broke. They fall with it, into the crevasse. */
+  /** Sets which tiles are gone and which are cracked, exactly as the server says. Nothing moves. */
+  setFloor(gone: readonly number[], cracked: readonly number[], twist: Twist): void {
+    this.floor.setState(gone, cracked);
+    this.twist = twist;
+    this.applyTwist();
+  }
+
+  /** The cracked tiles fall, one after another, into the drop. Returns how many fell. */
+  collapse(tiles: readonly number[]): number {
+    return this.floor.collapse(tiles);
+  }
+
+  /** A blackout round is dim, and the name tags go dark. */
+  private applyTwist(): void {
+    if (!this.mapScene) return;
+    const dark = this.twist === "dark";
+    this.renderer.toneMappingExposure = this.mapScene.exposure * (dark ? 0.5 : 1);
+    this.mapScene.fog.near = dark ? 30 : this.fogNear;
+    this.mapScene.fog.far = dark ? 140 : this.fogFar;
+    for (const character of this.characters.values()) character.setLabelVisible(!dark);
+  }
+
+  /** These players were standing on tiles that just fell. They fall with them, into the drop. */
   plunge(ids: string[]): void {
     let any = false;
     for (const id of ids) {
@@ -324,6 +284,7 @@ export class World {
       let character = this.characters.get(state.id);
       if (!character) {
         character = makeActor(state.id, state.name);
+        character.setLabelVisible(this.twist !== "dark");
         this.characters.set(state.id, character);
         this.scene.add(character.root);
       }
@@ -358,6 +319,8 @@ export class World {
    * then fades. A flash and sparks appear at each gun, and a red burst where a beam hits someone.
    */
   fire(beams: Beam[]): void {
+    // A wide round fires beams about twice as thick, so they read as the danger they are.
+    const thickness = this.twist === "wide" ? 2.4 : 1;
     this.clearBeams();
     const now = performance.now();
     let shots = 0;
@@ -370,7 +333,7 @@ export class World {
       const { group, materials } = makeLaser();
       group.position.copy(from);
       group.lookAt(to);
-      group.scale.z = 0.0001;
+      group.scale.set(thickness, thickness, 0.0001);
       this.beamGroup.add(group);
       this.beams.push({ group, materials, baseOpacity: materials.map((m) => m.opacity), length, startedAt: now });
 
@@ -546,113 +509,6 @@ export class World {
     return this.characters.get(id) ?? this.titleActors.get(id);
   }
 
-  /**
-   * The arena floor, built as concentric levels, each made of separate slabs.
-   * Every level has its own edge, so the rings read clearly. When the ring shrinks,
-   * the slabs of the outer level fall away one by one.
-   */
-  private buildFloor(): void {
-    for (const tile of [...this.tiles]) this.removeTile(tile);
-    for (const mesh of this.levelMeshes.values()) this.discardLevelMesh(mesh);
-    this.levelMeshes.clear();
-    this.tiles = [];
-    const { floor } = this.mapScene;
-
-    this.levels.forEach((outer, level) => {
-      // While a level is whole it is drawn as one piece, which keeps the number of draw calls low.
-      // It only splits into separate slabs at the moment it breaks and has to fall apart.
-      const slabs = this.levelSlabs(level);
-      const merged = mergeGeometries(slabs.map((slab) => slab.geometry), false);
-      for (const slab of slabs) slab.geometry.dispose();
-      const whole = new THREE.Mesh(merged, floor.levelMaterial(level));
-      whole.receiveShadow = true;
-      this.floorGroup.add(whole);
-      this.levelMeshes.set(level, whole);
-
-      // The glowing edge of this level. It falls with the level.
-      const rim = new THREE.Mesh(new THREE.TorusGeometry(outer - 0.06, 0.07, 6, 160).rotateX(Math.PI / 2), floor.edge);
-      rim.position.y = 0.02;
-      rim.userData.rim = true;
-      this.floorGroup.add(rim);
-      this.tiles.push(this.newTile(rim, level));
-    });
-  }
-
-  /** The slabs that make up one floor level, each shaped like a slice of the ring and sitting in place. */
-  private levelSlabs(level: number): Array<{ geometry: THREE.BufferGeometry }> {
-    const outer = this.levels[level];
-    const isCenter = level === this.levels.length - 1;
-    const inner = isCenter ? 0 : this.levels[level + 1];
-    const segments = isCenter ? 1 : Math.max(10, Math.round(outer * 1.5));
-    const slabs: Array<{ geometry: THREE.BufferGeometry }> = [];
-    for (let i = 0; i < segments; i++) {
-      const a0 = (i / segments) * Math.PI * 2 + 0.004;
-      const a1 = ((i + 1) / segments) * Math.PI * 2 - 0.004;
-      slabs.push({ geometry: isCenter ? slabGeometry(0, outer, 0, Math.PI * 2) : slabGeometry(inner, outer, a0, a1) });
-    }
-    return slabs;
-  }
-
-  /** Splits a whole level into its separate slabs, so each can fall by itself. */
-  private explodeLevel(level: number): void {
-    const whole = this.levelMeshes.get(level);
-    if (!whole) return;
-    const material = whole.material as THREE.Material;
-    this.discardLevelMesh(whole);
-    this.levelMeshes.delete(level);
-    for (const { geometry } of this.levelSlabs(level)) {
-      // Center the slab on itself, so it tumbles around its own middle when it falls and not around the arena.
-      geometry.computeBoundingBox();
-      const middle = geometry.boundingBox!.getCenter(new THREE.Vector3());
-      geometry.translate(-middle.x, -middle.y, -middle.z);
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.copy(middle);
-      mesh.receiveShadow = true;
-      this.floorGroup.add(mesh);
-      this.tiles.push(this.newTile(mesh, level));
-    }
-  }
-
-  private discardLevelMesh(mesh: THREE.Mesh): void {
-    this.floorGroup.remove(mesh);
-    mesh.geometry.dispose();
-  }
-
-  private newTile(mesh: THREE.Mesh, level: number): Tile {
-    return {
-      mesh,
-      level,
-      falling: false,
-      delay: 0,
-      home: mesh.position.clone(),
-      velocity: new THREE.Vector3(),
-      spin: new THREE.Vector3(),
-    };
-  }
-
-  private removeTile(tile: Tile): void {
-    if (tile.falling) this.fallingCount -= 1;
-    this.floorGroup.remove(tile.mesh);
-    tile.mesh.geometry.dispose();
-    this.tiles = this.tiles.filter((candidate) => candidate !== tile);
-  }
-
-  /** Moves the cage bars and sizes the rails for a radius. Cheap enough to run every frame. */
-  private applyRadius(radius: number): void {
-    this.shownRadius = radius;
-
-    const matrix = new THREE.Matrix4();
-    for (let i = 0; i < BAR_COUNT; i++) {
-      const angle = (i / BAR_COUNT) * Math.PI * 2;
-      matrix.makeTranslation(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
-      this.mapScene.cage.bars.setMatrixAt(i, matrix);
-    }
-    this.mapScene.cage.bars.instanceMatrix.needsUpdate = true;
-
-    const scale = radius / START_RING_RADIUS;
-    for (const ring of this.mapScene.cage.rings) ring.scale.set(scale, 1, scale);
-  }
-
   private resize(): void {
     const width = this.host.clientWidth || window.innerWidth;
     const height = this.host.clientHeight || window.innerHeight;
@@ -688,7 +544,7 @@ export class World {
     this.adaptQuality(realDt);
     this.updateTitle(dt);
     this.mapScene.update(realDt, now / 1000);
-    this.updateFloor(dt);
+    this.floor.update(dt, now / 1000);
     this.updateBeams(now);
     for (const character of this.characters.values()) character.update(dt);
     for (const actor of this.titleActors.values()) actor.update(dt);
@@ -782,39 +638,6 @@ export class World {
     this.lowPower = on;
     this.mapScene.sun.castShadow = !on;
     this.mapScene.setLowPower(on);
-  }
-
-  /** The cage closes in after the floor breaks away, and the broken slabs fall into the pit. */
-  private updateFloor(dt: number): void {
-    if (this.shownRadius !== this.targetRadius) {
-      if (this.closeDelay > 0) {
-        this.closeDelay -= dt;
-      } else {
-        const step = CAGE_CLOSE_SPEED * dt;
-        const next =
-          Math.abs(this.targetRadius - this.shownRadius) <= step
-            ? this.targetRadius
-            : this.shownRadius + Math.sign(this.targetRadius - this.shownRadius) * step;
-        this.applyRadius(next);
-      }
-    }
-
-    if (this.fallingCount === 0) return;
-    for (const tile of this.tiles.slice()) {
-      if (!tile.falling) continue;
-      if (tile.delay > 0) {
-        // The slab shudders before it lets go.
-        tile.delay -= dt;
-        tile.mesh.position.y = tile.home.y + Math.sin(performance.now() * 0.06 + tile.level) * 0.05;
-        continue;
-      }
-      tile.velocity.y -= 30 * dt;
-      tile.mesh.position.addScaledVector(tile.velocity, dt);
-      tile.mesh.rotation.x += tile.spin.x * dt;
-      tile.mesh.rotation.y += tile.spin.y * dt;
-      tile.mesh.rotation.z += tile.spin.z * dt;
-      if (tile.mesh.position.y < -PIT_DEPTH) this.removeTile(tile);
-    }
   }
 
   private updateBeams(now: number): void {
@@ -933,7 +756,7 @@ export class World {
         center.add(character.root.position);
         alive += 1;
       }
-      let spread = this.shownRadius * 0.9;
+      let spread = this.mapScene ? layoutFor(this.mapId as MapId).extent * 0.9 : 18;
       if (alive > 0) {
         center.divideScalar(alive);
         spread = 4;
@@ -982,25 +805,6 @@ function makeLaser(): { group: THREE.Group; materials: THREE.MeshBasicMaterial[]
     group.add(new THREE.Mesh(geometry, material));
   }
   return { group, materials };
-}
-
-/** A flat slab shaped like a slice of a ring, with its top at floor level. */
-function slabGeometry(inner: number, outer: number, start: number, end: number): THREE.ExtrudeGeometry {
-  const shape = new THREE.Shape();
-  if (inner <= 0) {
-    shape.absarc(0, 0, outer, 0, Math.PI * 2, false);
-  } else {
-    shape.absarc(0, 0, outer, start, end, false);
-    shape.absarc(0, 0, inner, end, start, true);
-    shape.closePath();
-  }
-  const geometry = new THREE.ExtrudeGeometry(shape, { depth: SLAB_THICKNESS, bevelEnabled: false, curveSegments: 6 });
-  // The shape is built upright. Lay it flat, then sink it so the top surface sits at y = 0.
-  // Laying it flat mirrors the angle: a point at angle a lands at (cos a, -sin a) on the floor.
-  geometry.rotateX(-Math.PI / 2);
-  geometry.translate(0, -SLAB_THICKNESS, 0);
-  geometry.computeBoundingSphere();
-  return geometry;
 }
 
 /** A flat arrow pointing along +Z (after the shape is laid on the floor). */

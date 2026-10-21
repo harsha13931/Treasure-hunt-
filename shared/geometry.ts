@@ -40,10 +40,15 @@ export function muzzlePosition(pos: Vec2, yaw: number): Vec2 {
  * Traces one straight beam from `origin` along `dir`.
  * Stops at the first target it touches. The caller leaves the shooter out of `targets`.
  */
-export function traceBeam(origin: Vec2, dir: Vec2, targets: Target[]): { to: Vec2; hit: string | null } {
+export function traceBeam(
+  origin: Vec2,
+  dir: Vec2,
+  targets: Target[],
+  halfWidth: number = BEAM_HALF_WIDTH,
+): { to: Vec2; hit: string | null } {
   let bestT = BEAM_RANGE;
   let bestId: string | null = null;
-  const reach = PLAYER_RADIUS + BEAM_HALF_WIDTH;
+  const reach = PLAYER_RADIUS + halfWidth;
 
   for (const target of targets) {
     const cx = target.pos.x - origin.x;
@@ -73,7 +78,11 @@ export function traceBeam(origin: Vec2, dir: Vec2, targets: Target[]): { to: Vec
  * Fires every living player's beam at once against the same snapshot of living players.
  * A player who is hit still gets to fire in this volley.
  */
-export function resolveVolley(shooters: Shooter[], alive: Target[]): { beams: Beam[]; eliminated: string[]; kills: Kill[] } {
+export function resolveVolley(
+  shooters: Shooter[],
+  alive: Target[],
+  halfWidth: number = BEAM_HALF_WIDTH,
+): { beams: Beam[]; eliminated: string[]; kills: Kill[] } {
   const beams: Beam[] = [];
   const eliminated = new Set<string>();
   const killers = new Map<string, string[]>();
@@ -82,7 +91,7 @@ export function resolveVolley(shooters: Shooter[], alive: Target[]): { beams: Be
     const origin = muzzlePosition(shooter.pos, shooter.yaw);
     const dir = facing(shooter.yaw);
     const targets = alive.filter((t) => t.id !== shooter.id);
-    const { to, hit } = traceBeam(origin, dir, targets);
+    const { to, hit } = traceBeam(origin, dir, targets, halfWidth);
     beams.push({ shooter: shooter.id, from: origin, to, hit });
     if (hit) {
       eliminated.add(hit);

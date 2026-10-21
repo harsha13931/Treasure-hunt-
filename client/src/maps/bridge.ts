@@ -1,9 +1,10 @@
 import * as THREE from "three";
+import { TILE_SIZE } from "../../../shared/arena.js";
 import {
   addGrain,
   Bin,
   blotches,
-  buildCage,
+  buildStraightFence,
   CAGE_HEIGHT,
   Drift,
   dotTexture,
@@ -28,7 +29,10 @@ const CANYON_FLOOR = -150;
 export function buildBridge(context: MapContext): MapScene {
   const bin = new Bin();
   const root = new THREE.Group();
-  const outer = context.levels[0];
+  const { layout } = context;
+  // How far the deck reaches along its length and across it, so the rope bridges and railings can meet it.
+  const halfLength = Math.max(...layout.tiles.map((t) => Math.abs(t.x))) + TILE_SIZE * 0.87;
+  const halfDepth = Math.max(...layout.tiles.map((t) => Math.abs(t.z))) + TILE_SIZE;
   const random = seededRandom(41);
   const dummy = new THREE.Object3D();
   const color = new THREE.Color();
@@ -79,24 +83,24 @@ export function buildBridge(context: MapContext): MapScene {
   }
   root.add(walls);
 
-  // The spire the deck is hung from, a lone pillar of rock rising from the canyon floor.
-  const spire = new THREE.Mesh(
-    new THREE.CylinderGeometry(7, 15, -CANYON_FLOOR - SLAB_THICKNESS, 9),
-    new THREE.MeshStandardMaterial({ map: rockTexture, color: "#b0745a", roughness: 1, flatShading: true }),
-  );
-  spire.position.y = CANYON_FLOOR / 2 - SLAB_THICKNESS / 2;
-  root.add(spire);
+  // The spires the deck is hung from: pillars of rock rising from the canyon floor.
+  const spireMaterial = new THREE.MeshStandardMaterial({ map: rockTexture, color: "#b0745a", roughness: 1, flatShading: true });
+  for (const x of [-halfLength * 0.6, 0, halfLength * 0.6]) {
+    const spire = new THREE.Mesh(new THREE.CylinderGeometry(4.5, 10, -CANYON_FLOOR - SLAB_THICKNESS, 9), spireMaterial);
+    spire.position.set(x, CANYON_FLOOR / 2 - SLAB_THICKNESS / 2, 0);
+    root.add(spire);
+  }
 
   // Two rope bridges run off from the deck to ledges on the cliffs. They are scenery: the cage is in the way.
   const plankMaterial = new THREE.MeshStandardMaterial({ map: plankTexture(), color: "#a8794a", roughness: 1 });
   const ropeMaterial = new THREE.MeshStandardMaterial({ color: "#c9aa7a", roughness: 1 });
-  const bridgeLength = 78;
+  const bridgeLength = 70;
   const plankCount = 46;
   const planks = new THREE.InstancedMesh(new THREE.BoxGeometry(5.2, 0.35, 1.3), plankMaterial, plankCount * 2);
   for (const side of [-1, 1]) {
     for (let i = 0; i < plankCount; i++) {
       const t = (i + 0.5) / plankCount;
-      dummy.position.set(side * (outer + 0.6 + t * bridgeLength), -sag(t, 5), 0);
+      dummy.position.set(side * (halfLength + 0.6 + t * bridgeLength), -sag(t, 5), 0);
       dummy.rotation.set(0, 0, 0);
       dummy.scale.set(1, 1, 0.95);
       dummy.updateMatrix();
@@ -105,14 +109,14 @@ export function buildBridge(context: MapContext): MapScene {
     for (const lane of [-2.5, 2.5]) {
       const points = Array.from({ length: 24 }, (_, k) => {
         const t = k / 23;
-        return new THREE.Vector3(side * (outer + 0.6 + t * bridgeLength), -sag(t, 5) + 1.5, lane);
+        return new THREE.Vector3(side * (halfLength + 0.6 + t * bridgeLength), -sag(t, 5) + 1.5, lane);
       });
       const rope = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points), 40, 0.14, 6), ropeMaterial);
       root.add(rope);
     }
     // The ledge the bridge reaches, a slab of rock jutting out from the cliff.
     const ledge = new THREE.Mesh(new THREE.BoxGeometry(34, 12, 44), new THREE.MeshStandardMaterial({ map: rockTexture, color: "#b9805f", roughness: 1, flatShading: true }));
-    ledge.position.set(side * (outer + bridgeLength + 18), -8, 0);
+    ledge.position.set(side * (halfLength + bridgeLength + 18), -8, 0);
     root.add(ledge);
   }
   root.add(planks);
@@ -147,24 +151,24 @@ export function buildBridge(context: MapContext): MapScene {
   });
   root.add(hemisphere, sun);
 
-  // The deck: wide planks, warm in one level and darker in the next. The edge is banded with glowing brass.
+  // The deck: wide planks, warm in one tint and darker in the next. The edge is banded with glowing brass.
   const planksTexture = plankTexture();
   planksTexture.repeat.set(0.16, 0.16);
-  const levelMaterials = new Map<number, THREE.MeshStandardMaterial>();
+  const tileMaterial = new THREE.MeshStandardMaterial({ map: planksTexture, color: "#ffffff", roughness: 0.85, metalness: 0 });
   const edge = new THREE.MeshStandardMaterial({ color: "#ffd9a0", emissive: "#ff9a3c", emissiveIntensity: 0.65, roughness: 0.4, metalness: 0.5 });
 
-  // The railing: dark wooden posts strung with rope, with a warm lantern rail on top.
+  // The railing along both sides: dark wooden posts strung with rope, with a warm lantern rail on top.
   const lantern = new THREE.MeshStandardMaterial({ color: "#ffe2b0", emissive: "#ff9d3a", emissiveIntensity: 0.9, roughness: 0.5 });
-  const cage = buildCage({
-    bar: new THREE.CylinderGeometry(0.16, 0.2, CAGE_HEIGHT, 8).translate(0, CAGE_HEIGHT / 2, 0),
-    barMaterial: new THREE.MeshStandardMaterial({ color: "#5a3a26", roughness: 1 }),
+  const fence = buildStraightFence(halfLength, halfDepth, {
+    post: new THREE.CylinderGeometry(0.16, 0.2, CAGE_HEIGHT * 0.6, 8).translate(0, (CAGE_HEIGHT * 0.6) / 2, 0),
+    postMaterial: new THREE.MeshStandardMaterial({ color: "#5a3a26", roughness: 1 }),
     rails: [
       { y: 1.2, tube: 0.12, material: ropeMaterial },
-      { y: CAGE_HEIGHT * 0.5, tube: 0.12, material: ropeMaterial },
-      { y: CAGE_HEIGHT, tube: 0.18, material: lantern },
+      { y: CAGE_HEIGHT * 0.3, tube: 0.12, material: ropeMaterial },
+      { y: CAGE_HEIGHT * 0.58, tube: 0.16, material: lantern },
     ],
   });
-  root.add(cage.bars, ...cage.rings);
+  root.add(fence.posts, ...fence.rails);
 
   return {
     root,
@@ -172,19 +176,8 @@ export function buildBridge(context: MapContext): MapScene {
     fog: new THREE.Fog("#f0b890", 160, 820),
     exposure: 1.02,
     sun,
-    floor: {
-      levelMaterial: (level) => {
-        let material = levelMaterials.get(level);
-        if (!material) {
-          material = new THREE.MeshStandardMaterial({ map: planksTexture, color: level % 2 === 0 ? "#f0cf9c" : "#cfa56e", roughness: 0.85, metalness: 0 });
-          levelMaterials.set(level, material);
-          bin.add(material);
-        }
-        return material;
-      },
-      edge,
-    },
-    cage,
+    floor: { material: tileMaterial, edge, tints: ["#f0cf9c", "#cfa56e"] },
+    fence,
     update: (dt, time) => {
       embers.update(dt, time);
       // The river shimmers.
@@ -193,6 +186,7 @@ export function buildBridge(context: MapContext): MapScene {
     setLowPower: (on) => embers.setFraction(on ? 0.4 : 1),
     dispose: () => {
       bin.add(edge);
+      bin.add(tileMaterial);
       bin.add(planksTexture);
       bin.disposeAll(root);
     },

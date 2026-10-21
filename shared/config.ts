@@ -15,15 +15,19 @@ export const ROOM_CODE_LENGTH = 5;
 /** Server simulation step. The browser predicts with the same step. */
 export const TICK_MS = 50;
 
-// The circle the players must stay inside. It shrinks in steps.
-export const START_RING_RADIUS = 18;
-export const RING_SHRINK_STEP = 2.5;
-/** The last circle. Two or three players fit, close enough that a match always ends. */
-export const MIN_RING_RADIUS = 3;
-/** After this many volleys in a row with no kill, the ring shrinks one step. */
-export const NO_KILL_VOLLEYS_BEFORE_SHRINK = 2;
-/** The ring also shrinks after this many volleys even if there were kills, so a match always moves on. */
-export const FORCED_SHRINK_EVERY_VOLLEYS = 3;
+// The floor breaks in pieces. After every second round, and after any round in which nobody was hit, a patch of the
+// floor (see shared/arena.ts) falls away, and anyone standing on it falls too. Tiles that will fall are shown
+// cracked for the whole round before, so everyone can see them and nobody is caught out by luck alone.
+export const COLLAPSE_EVERY_ROUNDS = 2;
+
+// A round can have a twist, announced when it starts.
+export type Twist = "none" | "wide" | "fast" | "dark";
+/** Wide: every beam is this many times as wide. */
+export const TWIST_BEAM_SCALE = 2.4;
+/** Fast: everyone walks this many times as fast. */
+export const TWIST_SPEED_SCALE = 1.45;
+/** From the second round on, this share of rounds has a twist. */
+export const TWIST_CHANCE = 0.5;
 /** In a public match, how long the lobby waits after the second player joins before it starts. */
 export const QUICK_START_DELAY_MS = 15_000;
 
@@ -51,20 +55,7 @@ export const REVEAL_MS = 3_000;
 export const FIRE_MS = 1_200;
 export const RESULT_MS = 2_500;
 
-// The snow world. The arena is a circle of ice cut into the snowfield, over a deep crevasse.
+// The world around the arena. Every arena hangs over a deep drop.
 export const WORLD_RADIUS = 380;
-/** How far down the bottom of the crevasse is. Floor levels that break away fall this far. */
+/** How far down the bottom of the drop is. Tiles that break away fall this far. */
 export const PIT_DEPTH = 50;
-
-/**
- * The edge of each floor level, from the outside in. The cage stands on the outer edge of the
- * current level. When the ring shrinks, the level outside the cage breaks away and falls.
- */
-export function ringLevels(): number[] {
-  const levels: number[] = [];
-  for (let radius = START_RING_RADIUS; radius > MIN_RING_RADIUS + 1e-6; radius -= RING_SHRINK_STEP) {
-    levels.push(radius);
-  }
-  levels.push(MIN_RING_RADIUS);
-  return levels;
-}

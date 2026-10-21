@@ -1,27 +1,29 @@
 import { randomBytes } from "node:crypto";
+import { createArena, pickCollapse, removeTiles, standingCount, startSpots, tileIndexAt, type Arena } from "../shared/arena.js";
 import {
+  BEAM_HALF_WIDTH,
   BOT_SKILL,
   BotDifficulty,
+  COLLAPSE_EVERY_ROUNDS,
   FIRE_MS,
-  FORCED_SHRINK_EVERY_VOLLEYS,
   HIDE_MS,
   MAX_PLAYERS,
   MIN_PLAYERS,
-  MIN_RING_RADIUS,
-  NO_KILL_VOLLEYS_BEFORE_SHRINK,
   QUICK_START_DELAY_MS,
   RECONNECT_GRACE_MS,
   REVEAL_MS,
   RESULT_MS,
-  RING_SHRINK_STEP,
   ROOM_SIZE,
-  START_RING_RADIUS,
   TICK_MS,
+  TWIST_BEAM_SCALE,
+  TWIST_CHANCE,
+  TWIST_SPEED_SCALE,
+  type Twist,
 } from "../shared/config.js";
 import { DEFAULT_MAP, isMapId, randomMap, type MapId } from "../shared/maps.js";
 import { resolveVolley, Shooter, Target, Vec2 } from "../shared/geometry.js";
-import { clampToRing, MoveInput, Pose, startPoseFor, stepPose } from "../shared/movement.js";
-import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../shared/protocol.js";
+import { MoveInput, Pose, stepPose } from "../shared/movement.js";
+import type { ClientMessage, FloorState, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../shared/protocol.js";
 import { BotPlan, planBot, stepBot } from "./bot.js";
 
 export type Send = (message: ServerMessage) => void;
@@ -36,16 +38,18 @@ export interface MatchSummary {
   /** Players knocked out by a laser, and by falling. */
   shot: number;
   fell: number;
-  /** Radius of the ring when the match ended. */
-  finalRadius: number;
+  /** How many floor tiles were still standing when the match ended. */
+  tilesLeft: number;
   winner: "person" | "bot" | "none";
 }
 
 export interface RoomOptions {
   /** Called when a match ends. */
   onMatchEnd?: (summary: MatchSummary) => void;
-  /** Where each player starts a match. Tests use this to set up exact duels. */
+  /** Where each player starts a match. Tests use this to set up exact duels. Without it, players start well spread out. */
   spawn?: (index: number, count: number) => Pose;
+  /** A source of randomness between 0 and 1. Tests pass a fixed one. */
+  random?: () => number;
   /** A public room appears to Quick Match, and starts by itself once there are enough players. */
   isPublic?: boolean;
   /** Called once the last person has left, so the owner can forget the room. */
@@ -90,9 +94,13 @@ export class Room {
   private hostId: string | null = null;
   private phase: Phase = "LOBBY";
   private volley = 0;
-  private radius = START_RING_RADIUS;
-  private noKillStreak = 0;
-  private volleysSinceShrink = 0;
+  /** The floor: which tiles are still standing. */
+  private arena: Arena = createArena(DEFAULT_MAP);
+  /** The tiles that will fall at the end of this round, shown cracked to everyone. */
+  private cracked: number[] = [];
+  /** The shape of the coming collapse, such as "edge" or "trench". */
+  private pattern = "none";
+  private twist: Twist = "none";
   private lastKills = 0;
   /** Who has been knocked out, in order. Used for the final ranking. */
   private knockedOut: string[] = [];
@@ -103,7 +111,8 @@ export class Room {
   private endsAt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private tickTimer: ReturnType<typeof setInterval> | null = null;
-  private spawn: (index: number, count: number) => Pose;
+  private spawn: ((index: number, count: number) => Pose) | null;
+  private random: () => number;
   /** Where each living player stood at the last reveal. This is public, so bots may use it. */
   private lastRevealed = new Map<string, Vec2>();
   /** The latest reveal and volley, kept so a player who reconnects can be shown the same scene. */
@@ -119,7 +128,8 @@ export class Room {
 
   constructor(code: string, options: RoomOptions = {}) {
     this.code = code;
-    this.spawn = options.spawn ?? startPoseFor;
+    this.spawn = options.spawn ?? null;
+    this.random = options.random ?? Math.random;
     this.isPublic = options.isPublic ?? false;
     // Public matches use a different arena each time.
     if (this.isPublic) this.selectedMap = "random";
@@ -141,8 +151,9 @@ export class Room {
     return this.phase;
   }
 
-  get ringRadius(): number {
-    return this.radius;
+  /** How many floor tiles are still standing. */
+  get tilesStanding(): number {
+    return standingCount(this.arena);
   }
 
   join(name: string, send: Send): string {
@@ -355,20 +366,24 @@ export class Room {
       this.players.set(id, this.newPlayer(id, `Bot ${BOT_NAMES[index % BOT_NAMES.length]}`, noop, true));
     }
 
+    this.arena = createArena(this.mapId);
     const all = [...this.players.values()];
+    const spots = startSpots(this.arena, all.length, this.random);
     all.forEach((player, index) => {
       player.alive = true;
       player.locked = false;
       player.queue = [];
       player.ack = 0;
       player.plan = null;
-      player.pose = this.spawn(index, all.length);
+      player.pose = this.spawn
+        ? this.spawn(index, all.length)
+        : { x: spots[index].x, z: spots[index].z, yaw: this.random() * Math.PI * 2 - Math.PI, vx: 0, vz: 0 };
     });
     this.matchStartedAt = Date.now();
     this.tally = { shot: 0, fell: 0, bots: botCount, people: all.length - botCount };
-    this.radius = START_RING_RADIUS;
-    this.noKillStreak = 0;
-    this.volleysSinceShrink = 0;
+    this.cracked = [];
+    this.twist = "none";
+    this.lastKills = 0;
     this.knockedOut = [];
     this.volley = 0;
     this.lastRevealed.clear();
@@ -385,13 +400,23 @@ export class Room {
     this.phase = "HIDE";
     this.endsAt = Date.now() + HIDE_MS;
 
+    // Decide now what this round holds: which tiles will fall at its end (everyone is shown them cracked),
+    // and whether it has a twist. A round after a quiet one always ends in a collapse, so stalling does not pay.
+    const due = this.volley % COLLAPSE_EVERY_ROUNDS === 0 || (this.volley > 1 && this.lastKills === 0);
+    const plan = due ? pickCollapse(this.arena, this.random) : { tiles: [], pattern: "none" };
+    this.cracked = plan.tiles;
+    this.pattern = plan.pattern;
+    this.twist = this.volley >= 2 && this.random() < TWIST_CHANCE ? (["wide", "fast", "dark"] as const)[Math.floor(this.random() * 3)] : "none";
+
     // When no person is left alive, the bots finish the match quickly so spectators are not kept waiting.
     const quick = this.livingPlayers().every((player) => player.bot);
     const known = [...this.lastRevealed.values()];
     for (const player of this.livingPlayers()) {
       player.locked = false;
       player.queue = [];
-      player.plan = player.bot ? planBot(this.botPlanRadius(), known, quick, Date.now(), this.botSkill) : null;
+      player.plan = player.bot
+        ? planBot(this.arena, player.pose, this.cracked, known, quick, Date.now(), this.botSkill, this.random)
+        : null;
     }
 
     this.sendHideToAll();
@@ -416,12 +441,12 @@ export class Room {
     for (const player of this.livingPlayers()) {
       if (!player.locked) {
         if (player.bot && player.plan) {
-          player.pose = stepBot(player.pose, player.plan, this.radius, TICK_MS / 1000);
+          player.pose = stepBot(player.pose, player.plan, this.arena, TICK_MS / 1000, this.speedScale());
           if (now >= player.plan.lockAt) player.locked = true;
         } else {
           const input = player.queue.shift();
           if (input) {
-            player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.radius);
+            player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.arena, this.speedScale());
             player.ack = input.seq;
           }
         }
@@ -435,7 +460,7 @@ export class Room {
   private lockPlayer(player: Player, yaw: number): void {
     while (player.queue.length > 0) {
       const input = player.queue.shift() as MoveInput;
-      player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.radius);
+      player.pose = stepPose(player.pose, input, TICK_MS / 1000, this.arena, this.speedScale());
       player.ack = input.seq;
     }
     // Locking in means standing still, so the player stops dead.
@@ -480,7 +505,7 @@ export class Room {
     this.lastRevealed.clear();
     for (const player of living) this.lastRevealed.set(player.id, { x: player.pose.x, z: player.pose.z });
 
-    const reveal: ServerMessage = { type: "reveal", map: this.mapId, volley: this.volley, fireAt, radius: this.radius, players };
+    const reveal: ServerMessage = { type: "reveal", map: this.mapId, volley: this.volley, fireAt, floor: this.floorState(), players };
     this.lastRevealMessage = reveal;
     this.lastFireMessage = null;
     this.broadcast(reveal);
@@ -493,7 +518,9 @@ export class Room {
     const shooters: Shooter[] = living.map((player) => ({ id: player.id, pos: player.pose, yaw: player.pose.yaw }));
     const targets: Target[] = living.map((player) => ({ id: player.id, pos: player.pose }));
 
-    const { beams, eliminated, kills } = resolveVolley(shooters, targets);
+    // A round with the wide twist fires wider beams.
+    const halfWidth = this.twist === "wide" ? BEAM_HALF_WIDTH * TWIST_BEAM_SCALE : BEAM_HALF_WIDTH;
+    const { beams, eliminated, kills } = resolveVolley(shooters, targets, halfWidth);
     for (const id of eliminated) {
       const player = this.players.get(id);
       if (player) player.alive = false;
@@ -515,72 +542,42 @@ export class Room {
       this.schedule(RESULT_MS, () => this.endMatch());
       return;
     }
-
-    // The ring closes in when nobody is getting hit, and also every few volleys regardless,
-    // so a match always keeps moving toward an ending.
-    this.noKillStreak = this.lastKills === 0 ? this.noKillStreak + 1 : 0;
-    this.volleysSinceShrink += 1;
-    if (this.radius - MIN_RING_RADIUS < 1e-6) {
-      // The last circle cannot close any further, so there is nothing to break and nothing to announce.
-      this.noKillStreak = 0;
-      this.volleysSinceShrink = 0;
-    } else if (
-      this.noKillStreak >= NO_KILL_VOLLEYS_BEFORE_SHRINK ||
-      this.volleysSinceShrink >= FORCED_SHRINK_EVERY_VOLLEYS
-    ) {
-      this.shrinkRing();
-    }
+    if (this.cracked.length > 0) this.collapse();
     this.schedule(RESULT_MS, () => this.enterHide());
   }
 
-  /** The radius the floor will have after the next shrink. */
-  private nextRadius(): number {
-    return Math.max(MIN_RING_RADIUS, this.radius - RING_SHRINK_STEP);
+  /** How fast everyone walks this round. */
+  private speedScale(): number {
+    return this.twist === "fast" ? TWIST_SPEED_SCALE : 1;
+  }
+
+  /** What the floor looks like now, for everyone who needs to draw it. */
+  private floorState(): FloorState {
+    const gone: number[] = [];
+    this.arena.standing.forEach((standing, index) => {
+      if (standing === 0) gone.push(index);
+    });
+    return { gone, cracked: this.cracked, twist: this.twist };
   }
 
   /**
-   * Whether the outer ice might break after this volley. Players are never told this, so it stays a surprise.
-   * Only the bots use it, and not perfectly.
+   * The cracked tiles fall. Anyone standing on one falls with it and is out of the match.
    */
-  private edgeWarning(): "none" | "possible" | "certain" {
-    if (this.radius - MIN_RING_RADIUS < 1e-6) return "none";
-    if (this.volleysSinceShrink + 1 >= FORCED_SHRINK_EVERY_VOLLEYS) return "certain";
-    // A round with no kill adds to the streak, so a streak one short of the limit means a quiet round breaks the edge.
-    if (this.noKillStreak + 1 >= NO_KILL_VOLLEYS_BEFORE_SHRINK) return "possible";
-    return "none";
-  }
-
-  /** Better bots sometimes keep clear of an edge that may break. Easy bots often get caught. */
-  private botPlanRadius(): number {
-    const edge = this.edgeWarning();
-    if (edge === "certain" && Math.random() < 0.2 + 0.8 * this.botSkill) return this.nextRadius();
-    if (edge === "possible" && Math.random() < 0.5 * this.botSkill) return this.nextRadius();
-    return this.radius;
-  }
-
-  /**
-   * Shrinks the ring one step. The outer ice breaks away and falls, so anyone standing on it falls too
-   * and is out of the match.
-   */
-  private shrinkRing(): void {
-    this.radius = this.nextRadius();
-    this.noKillStreak = 0;
-    this.volleysSinceShrink = 0;
-
+  private collapse(): void {
+    const falling = new Set(this.cracked);
     const fallen: string[] = [];
     for (const player of this.livingPlayers()) {
-      // Standing past the new edge means standing over the crevasse. Anyone still on the ice is kept in bounds.
-      if (Math.hypot(player.pose.x, player.pose.z) > this.radius) {
+      if (falling.has(tileIndexAt(this.arena.layout, player.pose.x, player.pose.z))) {
         player.alive = false;
         this.lastRevealed.delete(player.id);
         this.knockedOut.push(player.id);
         fallen.push(player.id);
-      } else {
-        player.pose = clampToRing(player.pose, this.radius);
       }
     }
+    removeTiles(this.arena, this.cracked);
     this.tally.fell += fallen.length;
-    this.broadcast({ type: "ring", radius: this.radius, fallen });
+    this.broadcast({ type: "collapse", tiles: this.cracked, fallen, pattern: this.pattern });
+    this.cracked = [];
   }
 
   private endMatch(): void {
@@ -601,7 +598,7 @@ export class Room {
       seconds: Math.round((Date.now() - this.matchStartedAt) / 1000),
       shot: this.tally.shot,
       fell: this.tally.fell,
-      finalRadius: this.radius,
+      tilesLeft: standingCount(this.arena),
       winner: winnerId === null ? "none" : this.players.get(winnerId)?.bot ? "bot" : "person",
     });
     this.broadcast({ type: "match_over", winnerId, players: this.publicPlayers(), ranking });
@@ -710,7 +707,7 @@ export class Room {
       map: this.mapId,
       volley: this.volley,
       endsAt: this.endsAt,
-      radius: this.radius,
+      floor: this.floorState(),
       you: {
         alive: player.alive,
         x: player.pose.x,

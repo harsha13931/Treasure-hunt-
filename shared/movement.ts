@@ -1,4 +1,5 @@
-import { PLAYER_RADIUS, START_RING_RADIUS, WALK_SPEED } from "./config.js";
+import { canStand, isStanding, type Arena } from "./arena.js";
+import { WALK_SPEED } from "./config.js";
 
 export interface Pose {
   x: number;
@@ -27,20 +28,13 @@ export function facing(yaw: number): { x: number; z: number } {
   return { x: Math.sin(yaw), z: Math.cos(yaw) };
 }
 
-/** Pushes a pose back inside the ring if it has drifted past the edge. Hitting the edge stops the player. */
-export function clampToRing(pose: Pose, ringRadius: number): Pose {
-  const limit = Math.max(0, ringRadius - PLAYER_RADIUS);
-  const distance = Math.hypot(pose.x, pose.z);
-  if (distance <= limit) return pose;
-  const scale = limit / distance;
-  return { ...pose, x: pose.x * scale, z: pose.z * scale, vx: 0, vz: 0 };
-}
-
 /**
  * Moves a pose for one simulation step. Used by both the server and the browser's prediction,
  * so they agree. Speed eases toward the wanted speed, which makes starting and stopping feel smooth.
+ * A player cannot walk onto a tile that has fallen, or so close to a hole that their feet would hang over it.
+ * Walking into the edge slides along it. `speedScale` is above 1 in a round where everyone is fast.
  */
-export function stepPose(pose: Pose, input: MoveInput, dt: number, ringRadius: number): Pose {
+export function stepPose(pose: Pose, input: MoveInput, dt: number, arena: Arena, speedScale = 1): Pose {
   const f = facing(input.yaw);
   // Right-hand direction: forward crossed with up.
   const r = { x: -f.z, z: f.x };
@@ -53,24 +47,18 @@ export function stepPose(pose: Pose, input: MoveInput, dt: number, ringRadius: n
   }
 
   const blend = 1 - Math.exp(-ACCELERATION * dt);
-  const vx = (pose.vx ?? 0) + (mx * WALK_SPEED - (pose.vx ?? 0)) * blend;
-  const vz = (pose.vz ?? 0) + (mz * WALK_SPEED - (pose.vz ?? 0)) * blend;
+  const speed = WALK_SPEED * speedScale;
+  const vx = (pose.vx ?? 0) + (mx * speed - (pose.vx ?? 0)) * blend;
+  const vz = (pose.vz ?? 0) + (mz * speed - (pose.vz ?? 0)) * blend;
 
-  return clampToRing({ x: pose.x + vx * dt, z: pose.z + vz * dt, yaw: input.yaw, vx, vz }, ringRadius);
-}
+  // Someone already too near an edge (a tile fell beside them) may still move, but not onto bare air.
+  const strict = canStand(arena, pose.x, pose.z);
+  const ok = (x: number, z: number) => (strict ? canStand(arena, x, z) : isStanding(arena, x, z));
 
-/**
- * Where a player starts: spread around the ring, facing a random direction.
- * Facing is random so nobody is lined up with an opponent at the start.
- */
-export function startPoseFor(index: number, count: number): Pose {
-  const angle = (index / Math.max(1, count)) * Math.PI * 2;
-  const radius = START_RING_RADIUS * 0.6;
-  return {
-    x: Math.cos(angle) * radius,
-    z: Math.sin(angle) * radius,
-    yaw: Math.random() * Math.PI * 2 - Math.PI,
-    vx: 0,
-    vz: 0,
-  };
+  const nx = pose.x + vx * dt;
+  const nz = pose.z + vz * dt;
+  if (ok(nx, nz)) return { x: nx, z: nz, yaw: input.yaw, vx, vz };
+  if (ok(nx, pose.z)) return { x: nx, z: pose.z, yaw: input.yaw, vx, vz: 0 };
+  if (ok(pose.x, nz)) return { x: pose.x, z: nz, yaw: input.yaw, vx: 0, vz };
+  return { x: pose.x, z: pose.z, yaw: input.yaw, vx: 0, vz: 0 };
 }

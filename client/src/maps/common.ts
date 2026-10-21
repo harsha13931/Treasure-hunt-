@@ -1,9 +1,9 @@
 import * as THREE from "three";
-import { PIT_DEPTH, START_RING_RADIUS, WORLD_RADIUS } from "../../../shared/config.js";
+import type { ArenaLayout } from "../../../shared/arena.js";
+import { PIT_DEPTH, WORLD_RADIUS } from "../../../shared/config.js";
 
-export { PIT_DEPTH, START_RING_RADIUS, WORLD_RADIUS };
+export { PIT_DEPTH, WORLD_RADIUS };
 
-export const BAR_COUNT = 80;
 export const CAGE_HEIGHT = 9;
 export const SLAB_THICKNESS = 0.9;
 
@@ -15,12 +15,15 @@ export interface MapScene {
   exposure: number;
   sun: THREE.DirectionalLight;
   floor: {
-    /** The material for one level of the floor, 0 being the outermost. */
-    levelMaterial(level: number): THREE.Material;
-    /** The glowing line around the edge of each level. */
+    /** The top and sides of every tile. It is white-ish, and each tile is tinted by its instance color. */
+    material: THREE.MeshStandardMaterial;
+    /** The glowing line around the edge of each tile. */
     edge: THREE.Material;
+    /** The two colors tiles are tinted with. Each tile gets a slightly different mix of them. */
+    tints: [string, string];
   };
-  cage: { bars: THREE.InstancedMesh; rings: THREE.Mesh[] };
+  /** The fence around the arena. It stands still: the floor breaks, but the fence does not close in. */
+  fence: { posts: THREE.InstancedMesh; rails: THREE.Mesh[] };
   update(dt: number, time: number): void;
   /** Phones and weak devices ask the scenery to do less. */
   setLowPower(on: boolean): void;
@@ -29,8 +32,8 @@ export interface MapScene {
 
 export interface MapContext {
   touch: boolean;
-  /** Edge radius of each floor level, outermost first. */
-  levels: number[];
+  /** The tiles of this arena. */
+  layout: ArenaLayout;
 }
 
 /** Collects everything a map creates, so it can all be freed when the map is thrown away. */
@@ -259,24 +262,59 @@ export class Drift {
   }
 }
 
-/** The fence around the arena: instanced posts, and rails that scale as the cage closes in. */
-export function buildCage(options: {
-  bar: THREE.BufferGeometry;
-  barMaterial: THREE.Material;
+interface FenceStyle {
+  post: THREE.BufferGeometry;
+  postMaterial: THREE.Material;
   rails: Array<{ y: number; tube: number; material: THREE.Material }>;
-}): { bars: THREE.InstancedMesh; rings: THREE.Mesh[] } {
-  const bars = new THREE.InstancedMesh(options.bar, options.barMaterial, BAR_COUNT);
-  bars.castShadow = true;
-  bars.frustumCulled = false;
-  const rings = options.rails.map((rail) => {
-    // Built once at the full size. Closing the cage scales it, so no geometry is rebuilt while playing.
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(START_RING_RADIUS, rail.tube, 10, 160).rotateX(Math.PI / 2), rail.material);
+}
+
+/** A round fence: posts spaced evenly around a circle, with a ring of rail at each height. */
+export function buildRoundFence(radius: number, style: FenceStyle): { posts: THREE.InstancedMesh; rails: THREE.Mesh[] } {
+  const count = Math.round((Math.PI * 2 * radius) / 1.15);
+  const posts = new THREE.InstancedMesh(style.post, style.postMaterial, count);
+  const matrix = new THREE.Matrix4();
+  for (let i = 0; i < count; i++) {
+    const angle = (i / count) * Math.PI * 2;
+    posts.setMatrixAt(i, matrix.makeTranslation(Math.cos(angle) * radius, 0, Math.sin(angle) * radius));
+  }
+  posts.instanceMatrix.needsUpdate = true;
+  posts.castShadow = true;
+  posts.frustumCulled = false;
+  const rails = style.rails.map((rail) => {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, rail.tube, 10, 160).rotateX(Math.PI / 2), rail.material);
     ring.position.y = rail.y;
     ring.castShadow = true;
     ring.frustumCulled = false;
     return ring;
   });
-  return { bars, rings };
+  return { posts, rails };
+}
+
+/** A fence along the two long sides of a narrow arena, such as a bridge. The ends are left open. */
+export function buildStraightFence(halfLength: number, halfDepth: number, style: FenceStyle): { posts: THREE.InstancedMesh; rails: THREE.Mesh[] } {
+  const perSide = Math.round((halfLength * 2) / 1.2);
+  const posts = new THREE.InstancedMesh(style.post, style.postMaterial, perSide * 2);
+  const matrix = new THREE.Matrix4();
+  for (let side = 0; side < 2; side++) {
+    for (let i = 0; i < perSide; i++) {
+      const x = -halfLength + ((i + 0.5) / perSide) * halfLength * 2;
+      posts.setMatrixAt(side * perSide + i, matrix.makeTranslation(x, 0, side === 0 ? -halfDepth : halfDepth));
+    }
+  }
+  posts.instanceMatrix.needsUpdate = true;
+  posts.castShadow = true;
+  posts.frustumCulled = false;
+  const rails: THREE.Mesh[] = [];
+  for (const rail of style.rails) {
+    for (const z of [-halfDepth, halfDepth]) {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(halfLength * 2, rail.tube * 2, rail.tube * 2), rail.material);
+      mesh.position.set(0, rail.y, z);
+      mesh.castShadow = true;
+      mesh.frustumCulled = false;
+      rails.push(mesh);
+    }
+  }
+  return { posts, rails };
 }
 
 /** The lights every map has: a sky light, and a sun that casts the shadows. */

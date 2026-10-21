@@ -1,8 +1,9 @@
-import { HIDE_MS, MIN_RING_RADIUS, PLAYER_COLORS, REVEAL_MS, ROOM_CODE_LENGTH, ROOM_SIZE, START_RING_RADIUS, TICK_MS, type BotDifficulty } from "../../shared/config.js";
+import { FINAL_TILES, TILE_SPACING, createArena, removeTiles, standingCount, type Arena } from "../../shared/arena.js";
+import { HIDE_MS, PLAYER_COLORS, REVEAL_MS, ROOM_CODE_LENGTH, ROOM_SIZE, TICK_MS, TWIST_SPEED_SCALE, type BotDifficulty, type Twist } from "../../shared/config.js";
 import { DEFAULT_MAP, isMapId } from "../../shared/maps.js";
 import type { Beam, Kill } from "../../shared/geometry.js";
 import { facing, stepPose, type MoveInput, type Pose } from "../../shared/movement.js";
-import type { ClientMessage, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../../shared/protocol.js";
+import type { ClientMessage, FloorState, Phase, PublicPlayer, RevealPlayer, ServerMessage } from "../../shared/protocol.js";
 import { Audio } from "./audio.js";
 import { assignColors, colorFor } from "./stickman.js";
 import type { VoicePart } from "./audio.js";
@@ -81,7 +82,11 @@ const state = {
   volley: 0,
   endsAt: 0,
   fireAt: 0,
-  radius: START_RING_RADIUS,
+  /** Which tiles of the floor are still there, as the server last said. */
+  arena: createArena(DEFAULT_MAP) as Arena,
+  /** Tiles that fall after this round. */
+  cracked: [] as number[],
+  twist: "none" as Twist,
   me: null as Me | null,
   /** Our position predicted by stepping our own inputs, and the step before it (for smoothing). */
   current: { x: 0, z: 0, yaw: 0, vx: 0, vz: 0 } as Pose,
@@ -738,9 +743,8 @@ function handle(message: ServerMessage): void {
       onFire(message.beams, message.eliminated, message.kills ?? []);
       break;
 
-    case "ring":
-      state.radius = message.radius;
-      onFallen(message.fallen ?? [], world.setRing(message.radius) > 0);
+    case "collapse":
+      onCollapse(message.tiles, message.fallen ?? []);
       break;
 
     case "match_over":
@@ -784,14 +788,14 @@ function onHide(message: Extract<ServerMessage, { type: "hide" }>): void {
   state.showResults = false;
   state.volley = message.volley;
   state.endsAt = message.endsAt;
-  state.radius = message.radius;
   state.players = message.players;
   assignColors(message.players);
   void audio.prepareVoice(message.players.map((p) => p.name));
   state.revealed = [];
   world.setMap(message.map);
-  world.setRing(message.radius, false);
+  applyFloor(message.map, message.floor);
   world.clearBeams();
+  announceRound(message.floor);
 
   const you = message.you;
   const me: Me = { id: state.playerId ?? "", alive: you.alive, locked: you.locked, yaw: you.yaw };
@@ -820,13 +824,13 @@ function onSelf(message: Extract<ServerMessage, { type: "self" }>): void {
   state.pending = state.pending.filter((p) => p.seq > message.ack);
   let pose: Pose = { x: message.x, z: message.z, yaw: me.yaw, vx: message.vx, vz: message.vz };
   for (const pending of state.pending) {
-    pose = stepPose(pose, pending.input, DT, state.radius);
+    pose = stepPose(pose, pending.input, DT, state.arena, speedScale());
   }
 
   const dx = pose.x - state.current.x;
   const dz = pose.z - state.current.z;
   if (Math.hypot(dx, dz) > 3) {
-    // Far off, for example after being pushed by the shrinking ring. Jump to the server's answer.
+    // Far off, for example after a correction from the server. Jump to the server's answer.
     state.current = { ...pose, yaw: me.yaw };
     state.previous = { ...state.current };
   } else {
@@ -843,11 +847,10 @@ function onReveal(message: Extract<ServerMessage, { type: "reveal" }>): void {
   audio.setIntensity(1);
   state.volley = message.volley;
   state.fireAt = message.fireAt;
-  state.radius = message.radius;
   state.revealed = message.players;
   lastCountdown = 0;
   world.setMap(message.map);
-  world.setRing(message.radius, false);
+  applyFloor(message.map, message.floor);
   if (state.me) {
     state.me.locked = true;
     const own = message.players.find((p) => p.id === state.me?.id);
@@ -930,16 +933,49 @@ function killText(kill: Kill): string {
   return `${displayName(kill.victim)} ${kill.victim === state.playerId ? "were" : "was"} eliminated by ${joinNames(kill.killers)}`;
 }
 
-/** The outer ice broke. Anyone standing on it falls with it. */
+/** Takes the floor exactly as the server describes it. Nothing animates. */
+function applyFloor(map: MapChoice, floor: FloorState): void {
+  state.arena = createArena(map as Parameters<typeof createArena>[0]);
+  removeTiles(state.arena, floor.gone);
+  state.cracked = floor.cracked;
+  state.twist = floor.twist;
+  world.setFloor(floor.gone, floor.cracked, floor.twist);
+}
+
+/** How fast we walk this round. */
+function speedScale(): number {
+  return state.twist === "fast" ? TWIST_SPEED_SCALE : 1;
+}
+
+/** Says what is special about the round that is starting: cracks in the floor, or a twist. */
+function announceRound(floor: FloorState): void {
+  const twistText: Record<Twist, string> = { none: "", wide: "Wide beams", fast: "Speed boost", dark: "Blackout" };
+  if (floor.twist !== "none") {
+    showBanner(twistText[floor.twist], 2600);
+    void audio.announce([{ phrase: `twist_${floor.twist}` }]);
+  } else if (floor.cracked.length > 0) {
+    showBanner("The floor is cracking", 2600);
+    void audio.announce([{ phrase: "cracking" }]);
+  }
+}
+
+/** The cracked tiles fell. Anyone standing on them fell too. */
+function onCollapse(tiles: number[], fallen: string[]): void {
+  removeTiles(state.arena, tiles);
+  state.cracked = [];
+  world.collapse(tiles);
+  onFallen(fallen, tiles.length > 0);
+}
+
 function onFallen(fallen: string[], floorBroke: boolean): void {
   if (fallen.length === 0) {
     // Only say the floor broke if some of it really did.
     if (floorBroke) {
-      if (state.radius - MIN_RING_RADIUS < 0.01) {
-        showBanner("Final circle", 2400);
-        void audio.announce([{ phrase: "final_circle" }]);
+      if (standingCount(state.arena) <= FINAL_TILES) {
+        showBanner("Final stand", 2400);
+        void audio.announce([{ phrase: "final_stand" }]);
       } else {
-        showBanner("The floor breaks away");
+        showBanner("The floor collapses");
       }
     }
     return;
@@ -948,7 +984,7 @@ function onFallen(fallen: string[], floorBroke: boolean): void {
     const player = state.players.find((p) => p.id === id);
     if (player) player.alive = false;
     addFeed(id, "fell into the crevasse", []);
-    outReasons.set(id, "Fell off the edge");
+    outReasons.set(id, "Fell with the floor");
   }
   renderRoster();
   world.plunge(fallen);
@@ -966,7 +1002,7 @@ function onFallen(fallen: string[], floorBroke: boolean): void {
     state.me.alive = false;
     audio.playEliminated();
     haptic([200, 80, 300]);
-    showToast("The ice broke under you. You are out of the match.");
+    showToast("The floor gave way under you. You are out of the match.");
   }
 }
 
@@ -1124,7 +1160,7 @@ function stepInput(): void {
   };
   state.pending.push({ seq: input.seq, input });
   state.previous = { ...state.current };
-  state.current = { ...stepPose(state.current, input, DT, state.radius), yaw: me.yaw };
+  state.current = { ...stepPose(state.current, input, DT, state.arena, speedScale()), yaw: me.yaw };
   state.moving = Math.hypot(state.current.vx ?? 0, state.current.vz ?? 0) > 0.5;
   outbox.push(input);
 }
@@ -1277,7 +1313,7 @@ function renderResults(): void {
 }
 
 function renderHud(): void {
-  setText(ui.ringRadius, state.radius.toFixed(1));
+  setText(ui.ringRadius, String(standingCount(state.arena)));
   setText(ui.phase, phaseText());
   renderRoster();
 
@@ -1455,7 +1491,8 @@ function renderRoster(): void {
 function phaseText(): string {
   switch (state.phase) {
     case "HIDE":
-      return state.me?.alive ? "Hide and aim" : "Watching";
+      if (!state.me?.alive) return "Watching";
+      return state.twist === "dark" ? "Blackout: hide and aim" : state.twist === "fast" ? "Speed boost: hide and aim" : state.twist === "wide" ? "Wide beams: hide and aim" : "Hide and aim";
     case "REVEAL":
       return "Revealed";
     case "FIRE":
@@ -1475,23 +1512,44 @@ function drawMinimap(): void {
   if (!ctx) return;
   const size = ui.minimap.width;
   const half = size / 2;
-  const view = 20; // meters shown from the center to the edge of the map
-  const scale = half / view;
-  const toPx = (x: number, z: number) => ({ x: half + x * scale, y: half + z * scale });
+  const layout = state.arena.layout;
+  // Fit the whole floor, whatever its shape, with a little margin.
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const t of layout.tiles) {
+    minX = Math.min(minX, t.x); maxX = Math.max(maxX, t.x);
+    minZ = Math.min(minZ, t.z); maxZ = Math.max(maxZ, t.z);
+  }
+  const span = Math.max(maxX - minX, maxZ - minZ) + TILE_SPACING * 1.4;
+  const scale = size / span;
+  const midX = (minX + maxX) / 2;
+  const midZ = (minZ + maxZ) / 2;
+  const toPx = (x: number, z: number) => ({ x: half + (x - midX) * scale, y: half + (z - midZ) * scale });
 
   ctx.clearRect(0, 0, size, size);
   ctx.fillStyle = "rgba(10, 18, 30, 0.55)";
   ctx.fillRect(0, 0, size, size);
 
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(half, half, state.radius * scale, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(190, 220, 240, 0.28)";
-  ctx.fill();
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = "#9be4ff";
-  ctx.stroke();
-  ctx.restore();
+  const crackedSet = new Set(state.cracked);
+  const pulse = 0.55 + 0.45 * Math.sin(performance.now() / 180);
+  const radius = (TILE_SPACING / Math.sqrt(3)) * scale * 0.94;
+  for (const t of layout.tiles) {
+    if (!state.arena.standing[t.index]) continue;
+    const c = toPx(t.x, t.z);
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const angle = Math.PI / 6 + (i * Math.PI) / 3;
+      const px = c.x + Math.cos(angle) * radius;
+      const py = c.y + Math.sin(angle) * radius;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fillStyle = crackedSet.has(t.index) ? `rgba(255, 140, 60, ${0.45 + pulse * 0.4})` : "rgba(190, 220, 240, 0.32)";
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = crackedSet.has(t.index) ? "#ffb36b" : "rgba(155, 228, 255, 0.55)";
+    ctx.stroke();
+  }
 
   const dot = (x: number, z: number, color: string, radius: number) => {
     const p = toPx(x, z);

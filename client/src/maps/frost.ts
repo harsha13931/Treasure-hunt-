@@ -3,7 +3,7 @@ import {
   addGrain,
   Bin,
   blotches,
-  buildCage,
+  buildRoundFence,
   CAGE_HEIGHT,
   Drift,
   dotTexture,
@@ -27,7 +27,8 @@ import {
 export function buildFrost(context: MapContext): MapScene {
   const bin = new Bin();
   const root = new THREE.Group();
-  const outer = context.levels[0];
+  // The hole in the snow is a little wider than the floor, so the floor hangs in the crack.
+  const outer = context.layout.extent + 0.8;
   const random = seededRandom(7);
 
   root.add(skyDome("#5f88bb", "#b7cde4", "#dfe9f3"));
@@ -175,25 +176,25 @@ export function buildFrost(context: MapContext): MapScene {
   });
   root.add(hemisphere, sun);
 
-  // The floor: clear blue ice, one shade for every other level so the rings read clearly.
+  // The floor: clear blue ice, tinted in two shades so neighboring tiles are easy to tell apart.
   const iceTexture = iceSurfaceTexture();
   iceTexture.repeat.set(0.12, 0.12); // extruded faces use meters as UVs, so this is one pattern per ~8 m
-  const levelMaterials = new Map<number, THREE.MeshStandardMaterial>();
+  const tileMaterial = new THREE.MeshStandardMaterial({ map: iceTexture, color: "#ffffff", roughness: 0.38, metalness: 0.05 });
   const edge = new THREE.MeshStandardMaterial({ color: "#bdeaff", emissive: "#2fa3d6", emissiveIntensity: 0.55, roughness: 0.4 });
 
-  // The cage: steel bars, with a glowing top rail.
+  // The fence: steel bars, with a glowing top rail.
   const steel = new THREE.MeshStandardMaterial({ color: "#aab5c1", roughness: 0.45, metalness: 0.3 });
   const topRail = new THREE.MeshStandardMaterial({ color: "#bfe8ff", emissive: "#3aa8d8", emissiveIntensity: 0.85, roughness: 0.4, metalness: 0.5 });
-  const cage = buildCage({
-    bar: new THREE.CylinderGeometry(0.11, 0.11, CAGE_HEIGHT, 10).translate(0, CAGE_HEIGHT / 2, 0),
-    barMaterial: new THREE.MeshStandardMaterial({ color: "#c3ccd6", roughness: 0.45, metalness: 0.3 }),
+  const fence = buildRoundFence(context.layout.extent + 1.2, {
+    post: new THREE.CylinderGeometry(0.11, 0.11, CAGE_HEIGHT, 10).translate(0, CAGE_HEIGHT / 2, 0),
+    postMaterial: new THREE.MeshStandardMaterial({ color: "#c3ccd6", roughness: 0.45, metalness: 0.3 }),
     rails: [
       { y: 0.2, tube: 0.14, material: steel },
       { y: CAGE_HEIGHT * 0.5, tube: 0.14, material: steel },
       { y: CAGE_HEIGHT, tube: 0.2, material: topRail },
     ],
   });
-  root.add(cage.bars, ...cage.rings);
+  root.add(fence.posts, ...fence.rails);
 
   return {
     root,
@@ -201,28 +202,13 @@ export function buildFrost(context: MapContext): MapScene {
     fog: new THREE.Fog("#c4d6e8", 90, 480),
     exposure: 0.95,
     sun,
-    floor: {
-      levelMaterial: (level) => {
-        let material = levelMaterials.get(level);
-        if (!material) {
-          material = new THREE.MeshStandardMaterial({
-            map: iceTexture,
-            color: level % 2 === 0 ? "#e4f1fa" : "#bdd6e8",
-            roughness: 0.38,
-            metalness: 0.05,
-          });
-          levelMaterials.set(level, material);
-          bin.add(material);
-        }
-        return material;
-      },
-      edge,
-    },
-    cage,
+    floor: { material: tileMaterial, edge, tints: ["#e8f3fb", "#b9d3e6"] },
+    fence,
     update: (dt, time) => snow.update(dt, time),
     setLowPower: (on) => snow.setFraction(on ? 0.4 : 1),
     dispose: () => {
       bin.add(edge);
+      bin.add(tileMaterial);
       bin.add(iceTexture);
       bin.disposeAll(root);
     },

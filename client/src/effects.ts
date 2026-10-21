@@ -124,6 +124,11 @@ interface Flash {
 export class Effects {
   private blood: ParticlePool;
   private sparks: ParticlePool;
+  /** Chunks of broken floor, thrown up when a tile lets go. */
+  private debris: ParticlePool;
+  /** Soft puffs of dust that swell and fade. */
+  private puffs: Flash[] = [];
+  private puffTexture: THREE.CanvasTexture;
   private flashes: Flash[] = [];
   private flashTexture: THREE.CanvasTexture;
 
@@ -138,7 +143,18 @@ export class Effects {
       new THREE.MeshBasicMaterial({ color: new THREE.Color("#ffb45a").multiplyScalar(2), toneMapped: false }),
       -14,
     );
-    scene.add(this.blood.mesh, this.sparks.mesh);
+    this.debris = new ParticlePool(220, new THREE.MeshStandardMaterial({ color: "#9aa0a6", roughness: 1, flatShading: true }), -26);
+    scene.add(this.blood.mesh, this.sparks.mesh, this.debris.mesh);
+
+    this.puffTexture = makePuffTexture();
+    for (let i = 0; i < 40; i++) {
+      const sprite = new THREE.Sprite(
+        new THREE.SpriteMaterial({ map: this.puffTexture, color: "#c9c2b6", transparent: true, depthWrite: false, opacity: 0 }),
+      );
+      sprite.visible = false;
+      scene.add(sprite);
+      this.puffs.push({ sprite, age: 0, life: 1, size: 1 });
+    }
 
     this.flashTexture = makeFlashTexture();
     for (let i = 0; i < 16; i++) {
@@ -169,6 +185,26 @@ export class Effects {
     this.impactFlash(at, 2.2);
   }
 
+  /**
+   * A tile letting go: chunks of floor thrown up, and a cloud of dust that rolls outward and fades.
+   * `tint` is the color of the dust, so snow looks pale and canyon rock looks warm.
+   */
+  floorBreak(at: THREE.Vector3, tint: string): void {
+    for (let i = 0; i < 10; i++) {
+      const velocity = new THREE.Vector3(rand(-3.5, 3.5), rand(2, 8), rand(-3.5, 3.5));
+      this.debris.spawn(at, velocity, rand(0.12, 0.34), rand(1.0, 1.8), false);
+    }
+    for (let i = 0; i < 3; i++) {
+      const puff = this.puffs.find((candidate) => !candidate.sprite.visible) ?? this.puffs[0];
+      puff.sprite.position.set(at.x + rand(-1.4, 1.4), at.y + rand(0.2, 1), at.z + rand(-1.4, 1.4));
+      puff.sprite.visible = true;
+      puff.age = 0;
+      puff.life = rand(1.1, 1.8);
+      puff.size = rand(3.2, 5.2);
+      (puff.sprite.material as THREE.SpriteMaterial).color.set(tint);
+    }
+  }
+
   /** Orange sparks, thrown out in all directions. */
   sparkBurst(at: THREE.Vector3, direction: THREE.Vector3, count: number): void {
     for (let i = 0; i < count; i++) {
@@ -192,6 +228,20 @@ export class Effects {
   update(dt: number): void {
     this.blood.update(dt);
     this.sparks.update(dt);
+    this.debris.update(dt);
+    for (const puff of this.puffs) {
+      if (!puff.sprite.visible) continue;
+      puff.age += dt;
+      const t = puff.age / puff.life;
+      if (t >= 1) {
+        puff.sprite.visible = false;
+        continue;
+      }
+      // The cloud swells quickly at first and drifts upward as it thins out.
+      puff.sprite.scale.setScalar(puff.size * (0.5 + 0.9 * Math.sqrt(t)));
+      puff.sprite.position.y += dt * 0.8;
+      (puff.sprite.material as THREE.SpriteMaterial).opacity = 0.55 * (1 - t);
+    }
     for (const flash of this.flashes) {
       if (!flash.sprite.visible) continue;
       flash.age += dt;
@@ -208,7 +258,9 @@ export class Effects {
   clear(): void {
     this.blood.clear();
     this.sparks.clear();
+    this.debris.clear();
     for (const flash of this.flashes) flash.sprite.visible = false;
+    for (const puff of this.puffs) puff.sprite.visible = false;
   }
 
   private flash(at: THREE.Vector3, size: number, life: number): void {
@@ -239,6 +291,28 @@ function makeFlashTexture(): THREE.CanvasTexture {
   gradient.addColorStop(1, "rgba(255,120,40,0)");
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, size, size);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+/** A soft, uneven cloud: a few overlapping round blobs, so each puff of dust does not look like a perfect circle. */
+function makePuffTexture(): THREE.CanvasTexture {
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  for (let i = 0; i < 7; i++) {
+    const x = size / 2 + (Math.random() - 0.5) * 36;
+    const y = size / 2 + (Math.random() - 0.5) * 36;
+    const radius = 26 + Math.random() * 22;
+    const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+    gradient.addColorStop(0, "rgba(255,255,255,0.55)");
+    gradient.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, size, size);
+  }
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   return texture;

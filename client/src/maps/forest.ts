@@ -3,7 +3,7 @@ import {
   addGrain,
   Bin,
   blotches,
-  buildCage,
+  buildRoundFence,
   CAGE_HEIGHT,
   Drift,
   dotTexture,
@@ -28,7 +28,7 @@ import {
 export function buildForest(context: MapContext): MapScene {
   const bin = new Bin();
   const root = new THREE.Group();
-  const outer = context.levels[0];
+  const outer = context.layout.extent + 0.8;
   const random = seededRandom(23);
   const dummy = new THREE.Object3D();
   const color = new THREE.Color();
@@ -222,23 +222,22 @@ export function buildForest(context: MapContext): MapScene {
   // The floor: old stone slabs furred with moss, in two shades. The edge glows soft green, like carved runes.
   const stone = mossyStoneTexture();
   stone.repeat.set(0.11, 0.11);
-  const levelMaterials = new Map<number, THREE.MeshStandardMaterial>();
+  const tileMaterial = new THREE.MeshStandardMaterial({ map: stone, color: "#ffffff", roughness: 0.9, metalness: 0 });
   const edge = new THREE.MeshStandardMaterial({ color: "#c8ffb8", emissive: "#59d96a", emissiveIntensity: 0.6, roughness: 0.5 });
 
   // The palisade: sharpened logs bound by rope, with a lantern-lit top rail.
   const rope = new THREE.MeshStandardMaterial({ color: "#b99a6a", roughness: 1 });
   const lantern = new THREE.MeshStandardMaterial({ color: "#ffe2a0", emissive: "#ffb040", emissiveIntensity: 0.9, roughness: 0.6 });
-  const log = new THREE.CylinderGeometry(0.1, 0.34, CAGE_HEIGHT, 8).translate(0, CAGE_HEIGHT / 2, 0);
-  const cage = buildCage({
-    bar: log,
-    barMaterial: new THREE.MeshStandardMaterial({ map: barkTexture(), color: "#9a7448", roughness: 1 }),
+  const fence = buildRoundFence(context.layout.extent + 1.2, {
+    post: new THREE.CylinderGeometry(0.1, 0.34, CAGE_HEIGHT, 8).translate(0, CAGE_HEIGHT / 2, 0),
+    postMaterial: new THREE.MeshStandardMaterial({ map: barkTexture(), color: "#9a7448", roughness: 1 }),
     rails: [
       { y: 1.4, tube: 0.13, material: rope },
       { y: CAGE_HEIGHT * 0.55, tube: 0.13, material: rope },
       { y: CAGE_HEIGHT * 0.98, tube: 0.16, material: lantern },
     ],
   });
-  root.add(cage.bars, ...cage.rings);
+  root.add(fence.posts, ...fence.rails);
 
   return {
     root,
@@ -246,19 +245,8 @@ export function buildForest(context: MapContext): MapScene {
     fog: new THREE.Fog("#b4d4ab", 70, 400),
     exposure: 0.95,
     sun,
-    floor: {
-      levelMaterial: (level) => {
-        let material = levelMaterials.get(level);
-        if (!material) {
-          material = new THREE.MeshStandardMaterial({ map: stone, color: level % 2 === 0 ? "#b9c4a8" : "#8fa078", roughness: 0.9, metalness: 0 });
-          levelMaterials.set(level, material);
-          bin.add(material);
-        }
-        return material;
-      },
-      edge,
-    },
-    cage,
+    floor: { material: tileMaterial, edge, tints: ["#bcc6ab", "#8fa078"] },
+    fence,
     update: (dt, time) => {
       fireflies.update(dt, time);
       leaves.update(dt, time);
@@ -274,6 +262,7 @@ export function buildForest(context: MapContext): MapScene {
     },
     dispose: () => {
       bin.add(edge);
+      bin.add(tileMaterial);
       bin.add(stone);
       bin.disposeAll(root);
     },

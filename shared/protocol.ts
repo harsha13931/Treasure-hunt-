@@ -1,5 +1,5 @@
 import type { Beam, Kill } from "./geometry.js";
-import type { BotDifficulty } from "./config.js";
+import type { BotDifficulty, Twist } from "./config.js";
 import type { MapId } from "./maps.js";
 import type { MoveInput } from "./movement.js";
 
@@ -28,6 +28,13 @@ export type ClientMessage =
   /** The host picks the arena in the lobby. Everyone sees the choice. */
   | { type: "map"; map: MapId | "random" }
   | { type: "leave" };
+
+/** What the floor looks like in a round: which tiles are gone, which are cracked and about to fall, and the twist. */
+export interface FloorState {
+  gone: number[];
+  cracked: number[];
+  twist: Twist;
+}
 
 export type Phase = "LOBBY" | "HIDE" | "REVEAL" | "FIRE" | "RESULT" | "MATCH_OVER";
 
@@ -72,7 +79,8 @@ export type ServerMessage =
       map: MapId;
       volley: number;
       endsAt: number;
-      radius: number;
+      /** The state of the floor this round. */
+      floor: FloorState;
       you: { alive: boolean; x: number; z: number; yaw: number; vx: number; vz: number; locked: boolean };
       players: PublicPlayer[];
     }
@@ -93,12 +101,12 @@ export type ServerMessage =
       map: MapId;
       volley: number;
       fireAt: number;
-      radius: number;
+      floor: FloorState;
       players: RevealPlayer[];
     }
   | { type: "fire"; beams: Beam[]; eliminated: string[]; kills: Kill[] }
-  /** The outer ice broke away. Everyone listed in `fallen` was standing on it and fell into the crevasse. */
-  | { type: "ring"; radius: number; fallen: string[] }
+  /** The cracked tiles fell. Everyone listed in `fallen` was standing on one and fell with it. */
+  | { type: "collapse"; tiles: number[]; fallen: string[]; pattern: string }
   | {
       type: "match_over";
       winnerId: string | null;
