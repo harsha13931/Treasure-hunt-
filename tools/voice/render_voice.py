@@ -36,7 +36,6 @@ PHRASES = {
     "and": "and",
     "you": "you",
     "final_stand": "Final stand",
-    "cracking": "The floor is cracking",
     "red": "Red robot",
     "blue": "Blue robot",
     "yellow": "Yellow robot",

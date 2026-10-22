@@ -98,6 +98,123 @@ function crackTexture(): THREE.CanvasTexture {
   return texture;
 }
 
+
+/** The directions to a tile's six neighbors, as steps in (q, r) and the angle they point at. */
+const NEIGHBORS: Array<{ dq: number; dr: number; angle: number }> = [
+  { dq: 1, dr: 0, angle: 0 },
+  { dq: 0, dr: 1, angle: 60 },
+  { dq: -1, dr: 1, angle: 120 },
+  { dq: -1, dr: 0, angle: 180 },
+  { dq: 0, dr: -1, angle: 240 },
+  { dq: 1, dr: -1, angle: 300 },
+];
+
+interface OuterEdge {
+  a: THREE.Vector2;
+  b: THREE.Vector2;
+  /** The way the edge faces, away from the floor. */
+  angle: number;
+}
+
+/** Every side of a tile that has no neighbor: together they make the outline of the whole floor. */
+function outerEdges(layout: ArenaLayout): OuterEdge[] {
+  const edges: OuterEdge[] = [];
+  for (const tile of layout.tiles) {
+    for (const n of NEIGHBORS) {
+      if (layout.byKey.has(`${tile.q + n.dq},${tile.r + n.dr}`)) continue;
+      const corner = (degrees: number) => {
+        const radians = (degrees * Math.PI) / 180;
+        return new THREE.Vector2(tile.x + Math.cos(radians) * TILE_SIZE, tile.z + Math.sin(radians) * TILE_SIZE);
+      };
+      edges.push({ a: corner(n.angle - 30), b: corner(n.angle + 30), angle: (n.angle * Math.PI) / 180 });
+    }
+  }
+  return edges;
+}
+
+/** The outline of the floor as one closed loop of points (in x, z), found by joining the outer edges end to end. */
+function outlineLoop(edges: OuterEdge[]): THREE.Vector2[] {
+  const key = (v: THREE.Vector2) => `${v.x.toFixed(2)},${v.y.toFixed(2)}`;
+  const byStart = new Map(edges.map((edge) => [key(edge.a), edge]));
+  const loop: THREE.Vector2[] = [];
+  let edge: OuterEdge | undefined = edges[0];
+  const seen = new Set<OuterEdge>();
+  while (edge && !seen.has(edge)) {
+    seen.add(edge);
+    loop.push(edge.a);
+    edge = byStart.get(key(edge.b));
+  }
+  return loop;
+}
+
+/**
+ * Closes the edge of the floor so that nothing but tiles ever shows a gap: a low glowing curb runs along every
+ * outer side of the outermost tiles, and a solid ledge fills the space between them and the fence. The tiles can
+ * fall, but this stays, so the arena always looks whole.
+ */
+function buildBorder(layout: ArenaLayout, map: MapScene): { objects: THREE.Object3D[]; geometry: THREE.BufferGeometry[]; materials: THREE.Material[] } {
+  const edges = outerEdges(layout);
+  const geometry: THREE.BufferGeometry[] = [];
+  const materials: THREE.Material[] = [];
+  const objects: THREE.Object3D[] = [];
+
+  // The curb.
+  const width = 0.5;
+  const curbGeo = new THREE.BoxGeometry(TILE_SIZE + width, 0.7, width);
+  geometry.push(curbGeo);
+  const curb = new THREE.InstancedMesh(curbGeo, map.floor.edge, edges.length);
+  const matrix = new THREE.Matrix4();
+  const euler = new THREE.Euler();
+  const quaternion = new THREE.Quaternion();
+  const one = new THREE.Vector3(1, 1, 1);
+  edges.forEach((edge, i) => {
+    const dx = edge.b.x - edge.a.x;
+    const dz = edge.b.y - edge.a.y;
+    const push = width / 2 + 0.03;
+    const position = new THREE.Vector3(
+      (edge.a.x + edge.b.x) / 2 + Math.cos(edge.angle) * push,
+      0.1,
+      (edge.a.y + edge.b.y) / 2 + Math.sin(edge.angle) * push,
+    );
+    quaternion.setFromEuler(euler.set(0, -Math.atan2(dz, dx), 0));
+    curb.setMatrixAt(i, matrix.compose(position, quaternion, one));
+  });
+  curb.instanceMatrix.needsUpdate = true;
+  curb.frustumCulled = false;
+  curb.castShadow = true;
+  objects.push(curb);
+
+  // The ledge: the area around the floor, out to the fence, with the floor's outline cut out of it.
+  const loop = outlineLoop(edges);
+  if (loop.length > 2) {
+    const shape = new THREE.Shape();
+    if (layout.map === "bridge") {
+      const halfLength = Math.max(...layout.tiles.map((t) => Math.abs(t.x))) + TILE_SIZE * 0.87;
+      const halfDepth = Math.max(...layout.tiles.map((t) => Math.abs(t.z))) + TILE_SIZE;
+      shape.moveTo(-halfLength, -halfDepth);
+      shape.lineTo(halfLength, -halfDepth);
+      shape.lineTo(halfLength, halfDepth);
+      shape.lineTo(-halfLength, halfDepth);
+      shape.closePath();
+    } else {
+      shape.absarc(0, 0, layout.extent + 0.8, 0, Math.PI * 2, false);
+    }
+    // Shapes are drawn in x, y and then laid flat, which turns y into -z.
+    shape.holes.push(new THREE.Path(loop.map((v) => new THREE.Vector2(v.x, -v.y))));
+    const ledgeGeo = new THREE.ExtrudeGeometry(shape, { depth: SLAB_THICKNESS, bevelEnabled: false });
+    ledgeGeo.rotateX(-Math.PI / 2);
+    ledgeGeo.translate(0, -SLAB_THICKNESS - 0.03, 0);
+    geometry.push(ledgeGeo);
+    const source = map.floor.material;
+    const material = new THREE.MeshStandardMaterial({ map: source.map, color: new THREE.Color(map.floor.tints[1]).multiplyScalar(0.72), roughness: source.roughness, metalness: source.metalness });
+    materials.push(material);
+    const ledge = new THREE.Mesh(ledgeGeo, material);
+    ledge.receiveShadow = true;
+    objects.push(ledge);
+  }
+  return { objects, geometry, materials };
+}
+
 interface Faller {
   index: number;
   delay: number;
@@ -134,6 +251,7 @@ export class Floor {
   private fallers = new Map<number, Faller>();
   private dirty = true;
   private ownGeometry: THREE.BufferGeometry[] = [];
+  private ownMaterials: THREE.Material[] = [];
   private ownTexture: THREE.Texture;
 
   constructor(
@@ -166,6 +284,10 @@ export class Floor {
     this.cracks = new THREE.InstancedMesh(crackGeo, this.crackMaterial, count);
     this.cracks.frustumCulled = false;
     this.group.add(this.tiles, this.rims, this.cracks);
+    const border = buildBorder(layout, map);
+    this.group.add(...border.objects);
+    this.ownGeometry.push(...border.geometry);
+    this.ownMaterials.push(...border.materials);
 
     // Each tile is turned a random multiple of a sixth of a turn, and tinted a little differently, so no two look alike.
     this.yaw = layout.tiles.map(() => Math.floor(Math.random() * 6) * (Math.PI / 3));
@@ -275,6 +397,7 @@ export class Floor {
   dispose(): void {
     for (const geometry of this.ownGeometry) geometry.dispose();
     this.crackMaterial.dispose();
+    for (const material of this.ownMaterials) material.dispose();
     this.ownTexture.dispose();
     this.tiles.dispose();
     this.rims.dispose();

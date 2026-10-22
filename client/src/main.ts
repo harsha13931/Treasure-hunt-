@@ -949,7 +949,6 @@ function announceRound(volley: number, floor: FloorState): void {
   let sub = `${state.players.filter((p) => p.alive).length} players left`;
   if (floor.cracked.length > 0) {
     sub = "The floor is cracking";
-    void audio.announce([{ phrase: "cracking" }]);
   }
   setText(ui.roundTitle, `Round ${volley}`);
   setText(ui.roundSub, sub);
