@@ -10,7 +10,7 @@ import { colorFor, createLaserPistol, GUN_TIP, makeLabel } from "./stickman.js";
  * released under CC0 1.0 (public domain). See client/public/models/CREDITS.md.
  * It stands about 4.8 meters tall as modelled, which is the height this game uses for players.
  */
-const MODEL_URL = "/models/RobotExpressive.glb";
+const MODEL_URL = `${import.meta.env.BASE_URL}models/RobotExpressive.glb`;
 const MODEL_HEIGHT = 4.8;
 /** The pistol is modelled small. This scales it up to suit a robot of this size. */
 const GUN_SCALE = 4.2;

@@ -1,10 +1,10 @@
 /** The composed soundtrack: files made by tools/compose/compose.py. Every match stem has the same length and tempo. */
-const MUSIC_URL = "/music/";
+const MUSIC_URL = `${import.meta.env.BASE_URL}music/`;
 const MATCH_STEMS = ["bed", "pulse", "drive"] as const;
 type MusicScene = "menu" | "match";
 
 /** The announcer: clips rendered ahead of time by tools/voice/render_voice.py. */
-const VOICE_URL = "/voice/";
+const VOICE_URL = `${import.meta.env.BASE_URL}voice/`;
 const COLOR_PHRASES = ["red", "blue", "yellow", "green", "purple", "pink", "cyan", "orange"];
 
 /** One piece of an announcement: a fixed phrase, or a player (called by name, or by color if the name has no clip). */

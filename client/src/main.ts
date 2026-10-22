@@ -500,6 +500,18 @@ function hideLoader(): void {
   ui.loader.classList.add("done");
 }
 
+/**
+ * Where the game server is. The normal build serves the game and its server from one address, so the socket
+ * uses the page's own address. A build for another site (see tools/itch) sets VITE_SERVER_URL to the server's
+ * address, and the socket goes there instead.
+ */
+function serverSocketUrl(): string {
+  const server = import.meta.env.VITE_SERVER_URL;
+  if (server) return `${server.replace(/\/$/, "").replace(/^http/, "ws")}/ws`;
+  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  return `${protocol}://${location.host}/ws`;
+}
+
 /** How many times to try again when the server does not answer, which is what a sleeping free-plan server does. */
 const WAKE_ATTEMPTS = 8;
 
@@ -508,8 +520,7 @@ function connect(then: (socket: WebSocket) => void, onFail?: (message: string) =
     then(state.socket);
     return;
   }
-  const protocol = location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${protocol}://${location.host}/ws`);
+  const socket = new WebSocket(serverSocketUrl());
   state.socket = socket;
   state.leaving = false;
 
