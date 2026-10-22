@@ -3,6 +3,7 @@ import {
   canStand,
   createArena,
   FINAL_TILES,
+  isOnePiece,
   isStanding,
   layoutFor,
   pickCollapse,
@@ -124,5 +125,31 @@ describe("collapse patterns", () => {
     }
     expect(standingCount(arena)).toBe(FINAL_TILES);
     expect(pickCollapse(arena, Math.random).tiles).toEqual([]);
+  });
+
+  it("never split the floor, so nobody is cut off from the rest", () => {
+    let seed = 7;
+    const random = () => {
+      seed = (seed * 16807) % 2147483647;
+      return seed / 2147483647;
+    };
+    for (const map of MAP_IDS) {
+      for (let match = 0; match < 40; match++) {
+        const arena = createArena(map);
+        for (let round = 0; round < 40; round++) {
+          const { tiles } = pickCollapse(arena, random);
+          removeTiles(arena, tiles);
+          expect(isOnePiece(arena.layout, arena.standing)).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("still bring the floor down to the last few tiles", () => {
+    for (const map of MAP_IDS) {
+      const arena = createArena(map);
+      for (let i = 0; i < 60; i++) removeTiles(arena, pickCollapse(arena, Math.random).tiles);
+      expect(standingCount(arena)).toBeLessThanOrEqual(FINAL_TILES);
+    }
   });
 });

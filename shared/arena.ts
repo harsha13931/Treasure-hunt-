@@ -202,5 +202,58 @@ export function pickCollapse(arena: Arena, random: () => number = Math.random): 
   const ranked = standing
     .map((t) => ({ index: t.index, score: pattern.score(t) + (noise.get(t.index) ?? 0) * 0.4 }))
     .sort((a, b) => b.score - a.score);
-  return { tiles: ranked.slice(0, target).map((t) => t.index), pattern: pattern.name };
+
+  // The floor that is left must stay in one piece, so nobody is ever cut off from the rest. Tiles are taken in the
+  // pattern's order, and one whose loss would split the floor is skipped. Another pass picks up tiles that became
+  // safe to take once their neighbours were gone.
+  const left = Uint8Array.from(arena.standing);
+  const chosen: number[] = [];
+  let progress = true;
+  while (chosen.length < target && progress) {
+    progress = false;
+    for (const { index } of ranked) {
+      if (chosen.length >= target) break;
+      if (left[index] === 0) continue;
+      left[index] = 0;
+      if (isOnePiece(arena.layout, left)) {
+        chosen.push(index);
+        progress = true;
+      } else {
+        left[index] = 1;
+      }
+    }
+  }
+  return chosen.length > 0 ? { tiles: chosen, pattern: pattern.name } : { tiles: [], pattern: "none" };
+}
+
+const STEPS: Array<[number, number]> = [
+  [1, 0],
+  [0, 1],
+  [-1, 1],
+  [-1, 0],
+  [0, -1],
+  [1, -1],
+];
+
+/** True if every tile that is still standing can be reached from every other one by walking over standing tiles. */
+export function isOnePiece(layout: ArenaLayout, standing: Uint8Array): boolean {
+  const start = standing.indexOf(1);
+  if (start < 0) return true;
+  const seen = new Uint8Array(standing.length);
+  const queue = [start];
+  seen[start] = 1;
+  let reached = 1;
+  while (queue.length > 0) {
+    const tile = layout.tiles[queue.pop() as number];
+    for (const [dq, dr] of STEPS) {
+      const next = layout.byKey.get(key(tile.q + dq, tile.r + dr));
+      if (next === undefined || standing[next] === 0 || seen[next] === 1) continue;
+      seen[next] = 1;
+      reached += 1;
+      queue.push(next);
+    }
+  }
+  let total = 0;
+  for (const value of standing) total += value;
+  return reached === total;
 }
