@@ -21,8 +21,19 @@ const BODY_LIMIT = 4096;
 /** A name may hold letters, numbers, spaces and a few marks, so friends can use the names they like without breaking layouts. */
 const NAME_PATTERN = /^[\p{L}\p{N} _.'-]+$/u;
 
+/**
+ * The API is called both from the game's own page and, when the game is embedded elsewhere (itch.io), from another
+ * site. The game is public and uses a bearer token rather than cookies, so any origin may call it.
+ */
+const CORS_HEADERS: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-headers": "content-type, authorization",
+  "access-control-max-age": "86400",
+};
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+  res.writeHead(status, { "content-type": "application/json", ...CORS_HEADERS }).end(JSON.stringify(body));
 }
 
 /** Reads and parses a small JSON body. Rejects anything too large so a flood of data cannot exhaust memory. */
@@ -99,6 +110,12 @@ function clientIp(req: IncomingMessage): string {
 
 /** Handles every /api/ request. Writes the response itself. */
 export async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  // A browser on another site sends this preflight before a POST. Answer it with the allowed methods and headers.
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, CORS_HEADERS).end();
+    return;
+  }
+
   if (!dbEnabled) {
     sendJson(res, 503, { error: "Accounts are not set up on this server." });
     return;

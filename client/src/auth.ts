@@ -17,6 +17,15 @@ export interface LeaderboardEntry {
 
 const TOKEN_KEY = "laser-ring:token";
 
+/**
+ * Where the account API lives. The normal build serves the game and its API from one address, so a relative path
+ * works. A build for another site (itch.io) sets VITE_SERVER_URL, and the calls go to the game server there instead.
+ */
+function apiBase(): string {
+  const server = import.meta.env.VITE_SERVER_URL;
+  return server ? server.replace(/\/$/, "") : "";
+}
+
 let token: string | null = null;
 let account: Account | null = null;
 const listeners = new Set<(account: Account | null) => void>();
@@ -69,7 +78,7 @@ async function api<T>(path: string, options: { method?: string; body?: unknown; 
     const current = readToken();
     if (current) headers.authorization = `Bearer ${current}`;
   }
-  const response = await fetch(path, {
+  const response = await fetch(apiBase() + path, {
     method: options.method ?? "GET",
     headers,
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
