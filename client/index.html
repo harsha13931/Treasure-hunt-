@@ -71,6 +71,10 @@
             <svg class="icon"><use href="#i-play" /></svg>
             <span><b>Play Game</b><small>Solo against bots, or online</small></span>
           </button>
+          <button class="menu-btn" data-go="leaderboard">
+            <svg class="icon"><use href="#i-trophy" /></svg>
+            <span><b>Leaderboard</b><small>The top players</small></span>
+          </button>
           <button class="menu-btn" data-go="howto">
             <svg class="icon"><use href="#i-help" /></svg>
             <span><b>How to Play</b><small>Learn the rules in a minute</small></span>
@@ -80,14 +84,6 @@
             <span><b>Settings</b><small>Sound, music, graphics</small></span>
           </button>
         </nav>
-
-        <label class="profile">
-          <span id="avatar" class="avatar" aria-hidden="true">P</span>
-          <span class="profile-text">
-            <small>Your callsign</small>
-            <input id="name" maxlength="16" autocomplete="nickname" placeholder="Player" />
-          </span>
-        </label>
       </section>
 
       <!-- Choose how to play -->
@@ -274,6 +270,59 @@
         </div>
       </section>
 
+      <!-- Leaderboard -->
+      <section id="leaderboard" class="screen menu-screen wide hidden">
+        <header class="page-head">
+          <button class="back-btn" data-go="home" aria-label="Back"><svg class="icon"><use href="#i-back" /></svg></button>
+          <h2>Leaderboard</h2>
+        </header>
+        <ol id="board-list" class="board"></ol>
+        <p id="board-empty" class="hint centered hidden">No matches played yet. Be the first!</p>
+      </section>
+
+      <!-- Profile -->
+      <section id="profile" class="screen menu-screen hidden">
+        <header class="page-head">
+          <button class="back-btn" data-go="home" aria-label="Back"><svg class="icon"><use href="#i-back" /></svg></button>
+          <h2>Your profile</h2>
+        </header>
+        <div class="profile-hero">
+          <span id="profile-hero-avatar" class="avatar big" aria-hidden="true">P</span>
+          <b id="profile-hero-name">Player</b>
+          <small id="profile-hero-sub">Guest</small>
+        </div>
+        <div class="stat-row">
+          <div class="stat"><b id="stat-wins">0</b><small>Wins</small></div>
+          <div class="stat"><b id="stat-matches">0</b><small>Matches</small></div>
+          <div class="stat"><b id="stat-elims">0</b><small>Times out</small></div>
+        </div>
+
+        <div id="profile-account" class="profile-forms">
+          <form id="name-form" class="mini-form">
+            <span class="field-label">Change your name</span>
+            <div class="mini-row">
+              <input id="edit-name" maxlength="16" autocomplete="nickname" placeholder="Your name" />
+              <button class="btn" type="submit">Save</button>
+            </div>
+          </form>
+          <form id="password-form" class="mini-form">
+            <span class="field-label">Change your password</span>
+            <input id="edit-current" type="password" autocomplete="current-password" placeholder="Current password" />
+            <div class="mini-row">
+              <input id="edit-next" type="password" autocomplete="new-password" placeholder="New password" />
+              <button class="btn" type="submit">Save</button>
+            </div>
+          </form>
+          <p id="profile-msg" class="hint centered"></p>
+          <button id="profile-signout" class="btn ghost">Sign out</button>
+        </div>
+
+        <div id="profile-guest" class="profile-forms hidden">
+          <p class="hint centered">You are playing as a guest. Create a profile to save your wins and climb the leaderboard.</p>
+          <button id="profile-create" class="cta"><svg class="icon"><use href="#i-crown" /></svg><span>Create a profile</span></button>
+        </div>
+      </section>
+
       <!-- In-match HUD -->
       <section id="game" class="screen hidden">
         <!-- Left: who is playing, in which color, and who is out -->
@@ -332,6 +381,32 @@
           <button id="spec-next" class="btn ghost spec-btn" aria-label="Watch the next player">▶</button>
         </div>
       </section>
+
+      <!-- Profile chip, top-left on the menus. Tapping it opens the profile screen. -->
+      <button id="profile-chip" class="profile-chip hidden" aria-label="Your profile">
+        <span id="chip-avatar" class="avatar" aria-hidden="true">P</span>
+        <span class="chip-text">
+          <b id="chip-name">Player</b>
+          <small id="chip-sub">Guest</small>
+        </span>
+      </button>
+
+      <!-- Sign up / sign in. Shown over the menu for a new player, or when they choose to sign in. -->
+      <div id="auth" class="auth-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+        <div class="auth-card">
+          <span class="auth-mark"><svg class="icon"><use href="#i-crown" /></svg></span>
+          <h2 id="auth-title">Create your profile</h2>
+          <p id="auth-sub">Pick a name and a password. The game will remember your wins.</p>
+          <form id="auth-form" autocomplete="on">
+            <input id="auth-name" maxlength="16" autocomplete="username" placeholder="Your name" />
+            <input id="auth-password" type="password" autocomplete="current-password" placeholder="Password" />
+            <p id="auth-error" class="error" role="alert"></p>
+            <button id="auth-submit" class="cta" type="submit"><span>Create profile</span></button>
+          </form>
+          <button id="auth-switch" class="link-btn" type="button">Already have a profile? Sign in</button>
+          <button id="auth-guest" class="link-btn subtle" type="button">Play as guest</button>
+        </div>
+      </div>
 
       <div id="rotate" class="rotate"><p>Turn your phone sideways to play</p><button id="rotate-dismiss" class="btn ghost" type="button">Play anyway</button></div>
       <div class="top-chips">

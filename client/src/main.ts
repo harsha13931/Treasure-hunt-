@@ -12,7 +12,21 @@ import { renderMapPicker, type MapChoice } from "./mapart.js";
 import { FloatingJoystick, HoldButton } from "./touch.js";
 import { loadRobot } from "./robot.js";
 import { World } from "./world.js";
-import { getDeviceId, loadPlayerStats, savePlayerName, recordMatchResult } from "./stats.js";
+import {
+  changePassword,
+  currentAccount,
+  getLeaderboard,
+  isSignedIn,
+  onAccountChange,
+  recordMatch,
+  register,
+  restoreSession,
+  signIn,
+  signOut,
+  updateName,
+  type Account,
+  type LeaderboardEntry,
+} from "./auth.js";
 
 let introSkipListener: (() => void) | null = null;
 
@@ -31,7 +45,7 @@ function revealTitle(): void {
 const INPUT_BATCH_MS = 100;
 const HUD_INTERVAL_MS = 100;
 const MINIMAP_INTERVAL_MS = 66;
-const SCREENS = ["title", "home", "modes", "solo", "online", "lobby", "game", "results", "howto", "settings"] as const;
+const SCREENS = ["title", "home", "modes", "solo", "online", "lobby", "game", "results", "howto", "settings", "leaderboard", "profile"] as const;
 type ScreenName = (typeof SCREENS)[number];
 
 /** Simulation step in seconds. Matches the server exactly so the prediction lines up. */
@@ -104,6 +118,8 @@ const state = {
   winnerId: null as string | null,
   /** When set, the match starts as soon as the room is created. This is how Solo vs Bots works. */
   pendingStart: null as SoloSettings | null,
+  /** True while the current match is solo-vs-bots practice, which does not count toward account stats. */
+  isSolo: false,
   /** The last solo setup, so Play Again can repeat it. */
   lastSolo: null as SoloSettings | null,
   showResults: false,
@@ -134,7 +150,6 @@ const audio = new Audio();
 const ui = {
   stage: byId("stage"),
   screens: Object.fromEntries(SCREENS.map((name) => [name, byId(name)])) as Record<ScreenName, HTMLElement>,
-  name: byId<HTMLInputElement>("name"),
   startGame: byId<HTMLButtonElement>("start-game"),
   play: byId<HTMLButtonElement>("play"),
   modeSolo: byId<HTMLButtonElement>("mode-solo"),
@@ -201,12 +216,46 @@ const ui = {
   soloMaps: byId("solo-maps"),
   lobbyMaps: byId("lobby-maps"),
   botIcons: byId("bot-icons"),
-  avatar: byId("avatar"),
   loader: byId("loader"),
   loaderText: byId("loader-text"),
   loaderFill: byId("loader-fill"),
   resultKicker: byId("result-kicker"),
   toast: byId("toast"),
+  // Profile chip (top-left) and the account overlay.
+  profileChip: byId<HTMLButtonElement>("profile-chip"),
+  chipAvatar: byId("chip-avatar"),
+  chipName: byId("chip-name"),
+  chipSub: byId("chip-sub"),
+  auth: byId("auth"),
+  authTitle: byId("auth-title"),
+  authSub: byId("auth-sub"),
+  authForm: byId<HTMLFormElement>("auth-form"),
+  authName: byId<HTMLInputElement>("auth-name"),
+  authPassword: byId<HTMLInputElement>("auth-password"),
+  authError: byId("auth-error"),
+  authSubmit: byId<HTMLButtonElement>("auth-submit"),
+  authSwitch: byId<HTMLButtonElement>("auth-switch"),
+  authGuest: byId<HTMLButtonElement>("auth-guest"),
+  // Profile screen.
+  profileHeroAvatar: byId("profile-hero-avatar"),
+  profileHeroName: byId("profile-hero-name"),
+  profileHeroSub: byId("profile-hero-sub"),
+  statWins: byId("stat-wins"),
+  statMatches: byId("stat-matches"),
+  statElims: byId("stat-elims"),
+  profileAccount: byId("profile-account"),
+  profileGuest: byId("profile-guest"),
+  nameForm: byId<HTMLFormElement>("name-form"),
+  editName: byId<HTMLInputElement>("edit-name"),
+  passwordForm: byId<HTMLFormElement>("password-form"),
+  editCurrent: byId<HTMLInputElement>("edit-current"),
+  editNext: byId<HTMLInputElement>("edit-next"),
+  profileMsg: byId("profile-msg"),
+  profileSignout: byId<HTMLButtonElement>("profile-signout"),
+  profileCreate: byId<HTMLButtonElement>("profile-create"),
+  // Leaderboard screen.
+  boardList: byId<HTMLOListElement>("board-list"),
+  boardEmpty: byId("board-empty"),
 };
 
 const world = new World(ui.stage);
@@ -250,8 +299,9 @@ updateOrientation();
 
 // ---------- Setup ----------
 
-ui.name.value = readSavedName();
 applySettings();
+// Restore a signed-in session in the background, so the profile chip and name are ready by the time the menu shows.
+void restoreSession();
 // Load the fonts and the robot first, with a loading bar, then show the title and play the opening scene.
 void (async () => {
   setLoader("Loading", 0.15);
@@ -315,10 +365,10 @@ document.addEventListener("click", (event) => {
 ui.startGame.addEventListener("click", () => {
   enterLandscape();
   showScreen("home");
+  maybeGreet();
 });
 
 ui.play.addEventListener("click", () => {
-  saveName(ui.name.value);
   showScreen("modes");
 });
 
@@ -361,11 +411,6 @@ function renderSoloMaps(): void {
 }
 renderSoloMaps();
 
-ui.name.addEventListener("input", () => {
-  ui.avatar.textContent = (ui.name.value.trim()[0] ?? "P").toUpperCase();
-});
-ui.avatar.textContent = (ui.name.value.trim()[0] ?? "P").toUpperCase();
-
 ui.difficulty.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
   button.addEventListener("click", () => {
     difficulty = button.dataset.difficulty as BotDifficulty;
@@ -378,6 +423,7 @@ ui.soloStart.addEventListener("click", () => {
   const solo: SoloSettings = { bots: Number(ui.soloBots.value), difficulty, map: soloMap() };
   state.pendingStart = solo;
   state.lastSolo = solo;
+  state.isSolo = true;
   enterLandscape();
   connect(
     (socket) => send({ type: "create", name: playerName() }, socket),
@@ -391,6 +437,7 @@ ui.quick.addEventListener("click", () => {
   ui.menuError.textContent = "";
   state.pendingStart = null;
   state.lastSolo = null;
+  state.isSolo = false;
   enterLandscape();
   connect((socket) => send({ type: "quick", name: playerName() }, socket));
 });
@@ -399,6 +446,7 @@ ui.create.addEventListener("click", () => {
   ui.menuError.textContent = "";
   state.pendingStart = null;
   state.lastSolo = null;
+  state.isSolo = false;
   enterLandscape();
   connect((socket) => send({ type: "create", name: playerName() }, socket));
 });
@@ -412,6 +460,7 @@ ui.join.addEventListener("click", () => {
   ui.menuError.textContent = "";
   state.pendingStart = null;
   state.lastSolo = null;
+  state.isSolo = false;
   enterLandscape();
   connect((socket) => send({ type: "join", code, name: playerName() }, socket));
 });
@@ -420,13 +469,199 @@ ui.code.addEventListener("keydown", (event) => {
   if (event.key === "Enter") ui.join.click();
 });
 
-ui.name.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") ui.play.click();
-});
-
 ui.roomCode.addEventListener("click", () => {
   void navigator.clipboard?.writeText(state.code).then(() => showToast("Room code copied.", true), () => {});
 });
+
+// ---------- Accounts and profile ----------
+
+const CHIP_SCREENS = new Set<ScreenName>(["home", "modes", "solo", "online", "leaderboard", "settings", "howto"]);
+
+function initial(name: string): string {
+  return (name.trim()[0] ?? "P").toUpperCase();
+}
+
+/** Updates the profile chip and, if open, the profile screen whenever the signed-in account changes. */
+function applyAccount(account: Account | null): void {
+  const name = account ? account.displayName : readGuestName() || "Player";
+  setText(ui.chipName, name);
+  ui.chipAvatar.textContent = initial(name);
+  setText(ui.chipSub, account ? `${account.wins} ${account.wins === 1 ? "win" : "wins"}` : "Guest");
+  if (state.screen === "profile") renderProfile();
+}
+onAccountChange(applyAccount);
+
+function renderProfile(): void {
+  const account = currentAccount();
+  const name = account ? account.displayName : readGuestName() || "Player";
+  ui.profileHeroAvatar.textContent = initial(name);
+  setText(ui.profileHeroName, name);
+  setText(ui.profileHeroSub, account ? "Signed in" : "Guest");
+  setText(ui.statWins, String(account?.wins ?? 0));
+  setText(ui.statMatches, String(account?.matchesPlayed ?? 0));
+  setText(ui.statElims, String(account?.eliminations ?? 0));
+  ui.profileAccount.classList.toggle("hidden", !account);
+  ui.profileGuest.classList.toggle("hidden", Boolean(account));
+  if (account) ui.editName.value = account.displayName;
+  setText(ui.profileMsg, "");
+}
+
+async function renderLeaderboard(): Promise<void> {
+  ui.boardList.replaceChildren();
+  ui.boardEmpty.classList.add("hidden");
+  const entries = await getLeaderboard(20);
+  if (entries.length === 0) {
+    ui.boardEmpty.classList.remove("hidden");
+    return;
+  }
+  const me = currentAccount();
+  entries.forEach((entry: LeaderboardEntry, index) => {
+    const li = document.createElement("li");
+    li.className = "board-row";
+    if (me && entry.username === me.username) li.classList.add("me");
+
+    const rank = document.createElement("span");
+    rank.className = "board-rank";
+    rank.textContent = String(index + 1);
+
+    const ava = document.createElement("span");
+    ava.className = "board-ava";
+    ava.textContent = initial(entry.displayName);
+
+    const nm = document.createElement("span");
+    nm.className = "board-name";
+    nm.textContent = entry.displayName;
+
+    const wins = document.createElement("span");
+    wins.className = "board-wins";
+    wins.textContent = String(entry.wins);
+    const unit = document.createElement("small");
+    unit.textContent = entry.wins === 1 ? " win" : " wins";
+    wins.appendChild(unit);
+
+    li.append(rank, ava, nm, wins);
+    ui.boardList.appendChild(li);
+  });
+}
+
+ui.profileChip.addEventListener("click", () => showScreen("profile"));
+
+// --- Sign up / sign in overlay ---
+
+let authMode: "register" | "signin" = "register";
+
+function openAuth(mode: "register" | "signin"): void {
+  authMode = mode;
+  setText(ui.authError, "");
+  ui.authPassword.value = "";
+  if (!ui.authName.value) ui.authName.value = readGuestName();
+  setText(ui.authTitle, mode === "register" ? "Create your profile" : "Welcome back");
+  setText(
+    ui.authSub,
+    mode === "register"
+      ? "Pick a name and a password. The game will remember your wins."
+      : "Sign in with your name and password.",
+  );
+  setText(ui.authSubmit.querySelector("span") as HTMLElement, mode === "register" ? "Create profile" : "Sign in");
+  setText(ui.authSwitch, mode === "register" ? "Already have a profile? Sign in" : "New here? Create a profile");
+  ui.auth.classList.remove("hidden");
+  window.setTimeout(() => ui.authName.focus(), 50);
+}
+
+function closeAuth(): void {
+  ui.auth.classList.add("hidden");
+  markGreeted();
+}
+
+ui.authForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void submitAuth();
+});
+
+async function submitAuth(): Promise<void> {
+  const name = ui.authName.value.trim();
+  const password = ui.authPassword.value;
+  setText(ui.authError, "");
+  ui.authSubmit.disabled = true;
+  try {
+    if (authMode === "register") await register(name, password);
+    else await signIn(name, password);
+    closeAuth();
+    showToast(`Welcome, ${playerName()}!`, true);
+  } catch (err) {
+    setText(ui.authError, err instanceof Error ? err.message : "Something went wrong.");
+  } finally {
+    ui.authSubmit.disabled = false;
+  }
+}
+
+ui.authSwitch.addEventListener("click", () => openAuth(authMode === "register" ? "signin" : "register"));
+
+ui.authGuest.addEventListener("click", () => {
+  const name = ui.authName.value.trim();
+  if (name) saveGuestName(name);
+  closeAuth();
+  applyAccount(null);
+});
+
+// --- Profile screen forms ---
+
+ui.nameForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void (async () => {
+    try {
+      await updateName(ui.editName.value.trim());
+      setText(ui.profileMsg, "Name saved.");
+    } catch (err) {
+      setText(ui.profileMsg, err instanceof Error ? err.message : "Could not save.");
+    }
+  })();
+});
+
+ui.passwordForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void (async () => {
+    try {
+      await changePassword(ui.editCurrent.value, ui.editNext.value);
+      ui.editCurrent.value = "";
+      ui.editNext.value = "";
+      setText(ui.profileMsg, "Password changed.");
+    } catch (err) {
+      setText(ui.profileMsg, err instanceof Error ? err.message : "Could not change password.");
+    }
+  })();
+});
+
+ui.profileSignout.addEventListener("click", () => {
+  void (async () => {
+    await signOut();
+    showToast("Signed out.", true);
+    showScreen("home");
+  })();
+});
+
+ui.profileCreate.addEventListener("click", () => openAuth("register"));
+
+function markGreeted(): void {
+  try {
+    localStorage.setItem("laser-ring:greeted", "1");
+  } catch {
+    // Not fatal; the overlay may show again next visit.
+  }
+}
+
+function wasGreeted(): boolean {
+  try {
+    return localStorage.getItem("laser-ring:greeted") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** On a first visit, invite a new player to make a profile. Returning players and signed-in players are left alone. */
+function maybeGreet(): void {
+  if (!isSignedIn() && !wasGreeted()) openAuth("register");
+}
 
 ui.lobbyBots.addEventListener("input", () => renderLobby());
 
@@ -1096,10 +1331,10 @@ function onMatchOver(message: Extract<ServerMessage, { type: "match_over" }>): v
         message.winnerId === state.playerId ? [{ phrase: "you_win" }] : [voicePlayer(message.winnerId), { phrase: "wins" }],
       );
     }
-    // Record match result to database
-    if (state.playerId) {
+    // Record the result to the player's account. Only counts online matches, not solo-vs-bots practice.
+    if (state.playerId && !state.isSolo && state.ranking.includes(state.playerId)) {
       const position = state.ranking.indexOf(state.playerId) + 1;
-      void recordMatchResult(position);
+      void recordMatch(position);
     }
   }
 
@@ -1252,9 +1487,12 @@ function showScreen(name: ScreenName): void {
   audio.setScene(name === "game" ? "match" : "menu");
   if (name !== "game") audio.setIntensity(0.3);
   ui.leaveGame.classList.toggle("hidden", name !== "game");
+  ui.profileChip.classList.toggle("hidden", !CHIP_SCREENS.has(name));
   if (name === "online") ui.menuError.textContent = "";
   if (name === "lobby") renderLobby();
   if (name === "solo") previewMap(soloMap());
+  if (name === "profile") renderProfile();
+  if (name === "leaderboard") void renderLeaderboard();
 }
 
 function renderLobby(): void {
@@ -1671,8 +1909,11 @@ function resetToHome(): void {
   setText(ui.timer, "--");
 }
 
+/** The name shown to other players: the signed-in account name, or the guest name, falling back to "Player". */
 function playerName(): string {
-  return ui.name.value.trim() || "Player";
+  const account = currentAccount();
+  if (account) return account.displayName;
+  return readGuestName() || "Player";
 }
 
 function nameOf(id: string): string {
@@ -1811,7 +2052,8 @@ function tag(text: string, extra = ""): HTMLElement {
   return node;
 }
 
-function readSavedName(): string {
+/** The name a guest (not signed in) plays under, kept on this device only. */
+function readGuestName(): string {
   try {
     return localStorage.getItem("laser-ring:name") ?? "";
   } catch {
@@ -1819,11 +2061,9 @@ function readSavedName(): string {
   }
 }
 
-function saveName(name: string): void {
+function saveGuestName(name: string): void {
   try {
     localStorage.setItem("laser-ring:name", name.trim());
-    // Also save to database if available
-    void savePlayerName(name.trim());
   } catch {
     // Storage can be blocked. The name simply won't be remembered.
   }

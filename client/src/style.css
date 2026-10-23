@@ -2298,3 +2298,301 @@ body.touch .banner {
   pointer-events: none;
   background: radial-gradient(ellipse at center, transparent 55%, rgba(4, 8, 16, 0.38) 100%);
 }
+
+/* ---------- Accounts: profile chip, overlay, profile screen, leaderboard ---------- */
+
+.profile-chip {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px 8px 8px;
+  background: rgba(8, 14, 26, 0.82);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink);
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  transition: border-color 0.2s var(--ease), transform 0.2s var(--ease);
+}
+.profile-chip:hover {
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+.profile-chip .avatar {
+  width: 38px;
+  height: 38px;
+  font-size: 1.15rem;
+  border-radius: 999px;
+}
+.chip-text {
+  display: grid;
+  gap: 1px;
+  text-align: left;
+  padding-right: 4px;
+}
+.chip-text b {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 0.98rem;
+  max-width: 11ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip-text small {
+  font-size: 0.64rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(3, 7, 14, 0.72);
+  backdrop-filter: blur(8px);
+}
+.auth-card {
+  width: min(400px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 28px 26px;
+  text-align: center;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 18px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+}
+.auth-mark {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 2px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--gold), var(--orange));
+  color: #2a1400;
+}
+.auth-mark .icon {
+  width: 28px;
+  height: 28px;
+}
+.auth-card h2 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 1.5rem;
+}
+.auth-card > p {
+  margin: 0 0 4px;
+  color: var(--dim);
+  font-size: 0.9rem;
+}
+#auth-form {
+  display: grid;
+  gap: 10px;
+}
+#auth-form input {
+  width: 100%;
+  padding: 13px 15px;
+  background: rgba(6, 12, 24, 0.7);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 1rem;
+  color: var(--ink);
+}
+#auth-form .cta {
+  margin-top: 4px;
+  justify-content: center;
+}
+.link-btn {
+  background: none;
+  border: 0;
+  color: var(--cyan);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px;
+}
+.link-btn.subtle {
+  color: var(--dim);
+}
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+.profile-hero {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+.avatar.big {
+  width: 78px;
+  height: 78px;
+  font-size: 2.3rem;
+  border-radius: 20px;
+}
+.profile-hero b {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 1.5rem;
+}
+.profile-hero small {
+  font-size: 0.68rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.stat {
+  display: grid;
+  gap: 2px;
+  padding: 14px 8px;
+  text-align: center;
+  background: rgba(8, 14, 26, 0.6);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.stat b {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 1.7rem;
+  color: var(--gold);
+}
+.stat small {
+  font-size: 0.64rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.profile-forms {
+  display: grid;
+  gap: 16px;
+}
+.mini-form {
+  display: grid;
+  gap: 8px;
+}
+.mini-row {
+  display: flex;
+  gap: 8px;
+}
+.mini-form input {
+  flex: 1;
+  width: 100%;
+  padding: 11px 14px;
+  background: rgba(6, 12, 24, 0.7);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+.mini-row .btn {
+  flex: 0 0 auto;
+}
+#profile-signout {
+  justify-self: center;
+}
+
+.board {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.board-row {
+  display: grid;
+  grid-template-columns: 34px 40px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: rgba(8, 14, 26, 0.6);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.board-row.me {
+  border-color: var(--cyan);
+  background: rgba(20, 54, 82, 0.6);
+}
+.board-rank {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 1.2rem;
+  color: var(--dim);
+  text-align: center;
+}
+.board-row:nth-child(1) .board-rank {
+  color: var(--gold);
+}
+.board-row:nth-child(2) .board-rank {
+  color: #cfd8e6;
+}
+.board-row:nth-child(3) .board-rank {
+  color: var(--orange-2);
+}
+.board-ava {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--cyan), #2f7de1);
+  color: #04202b;
+  font-family: var(--display);
+  font-weight: 800;
+}
+.board-name {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 1.05rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.board-wins {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 1.15rem;
+  color: var(--gold);
+}
+.board-wins small {
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+/* On a phone the chip shrinks so it never crowds the menus. */
+@media (max-width: 560px) {
+  .profile-chip {
+    top: 10px;
+    left: 10px;
+    padding: 6px 12px 6px 6px;
+  }
+  .profile-chip .avatar {
+    width: 32px;
+    height: 32px;
+    font-size: 1rem;
+  }
+  .chip-text b {
+    font-size: 0.9rem;
+    max-width: 9ch;
+  }
+}

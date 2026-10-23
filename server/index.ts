@@ -9,7 +9,8 @@ import { ROOM_CODE_LENGTH } from "../shared/config.js";
 import type { ClientMessage, ServerMessage } from "../shared/protocol.js";
 import { encode } from "../shared/protocol.js";
 import { Room } from "./room.js";
-import { initDb, getPlayer, upsertPlayer, getLeaderboard, recordMatch } from "./db.js";
+import { initDb } from "./db.js";
+import { handleApi } from "./api.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const CLIENT_DIR = resolve(fileURLToPath(new URL("../dist/client", import.meta.url)));
@@ -114,74 +115,9 @@ const http = createServer(async (req, res) => {
     return;
   }
 
-  // API endpoints
-  if (url.pathname === "/api/player" && req.method === "GET") {
-    const deviceId = url.searchParams.get("id");
-    if (!deviceId) {
-      res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "Missing device ID" }));
-      return;
-    }
-    try {
-      const player = await getPlayer(deviceId);
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(player || {}));
-    } catch (err) {
-      res.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: "Database error" }));
-    }
-    return;
-  }
-
-  if (url.pathname === "/api/player" && req.method === "POST") {
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
-    });
-    req.on("end", async () => {
-      try {
-        const data = JSON.parse(body);
-        const { deviceId, name } = data;
-        if (!deviceId || !name) {
-          res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "Missing fields" }));
-          return;
-        }
-        const player = await upsertPlayer(deviceId, name);
-        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(player));
-      } catch (err) {
-        res.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: "Database error" }));
-      }
-    });
-    return;
-  }
-
-  if (url.pathname === "/api/leaderboard" && req.method === "GET") {
-    try {
-      const limit = Math.min(Number(url.searchParams.get("limit")) || 10, 100);
-      const leaderboard = await getLeaderboard(limit);
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(leaderboard));
-    } catch (err) {
-      res.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: "Database error" }));
-    }
-    return;
-  }
-
-  if (url.pathname === "/api/match" && req.method === "POST") {
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
-    });
-    req.on("end", async () => {
-      try {
-        const data = JSON.parse(body);
-        const { deviceId, winnerDeviceId, position, matchCode } = data;
-        if (!deviceId || !winnerDeviceId || position === undefined || !matchCode) {
-          res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "Missing fields" }));
-          return;
-        }
-        await recordMatch(deviceId, winnerDeviceId, position, matchCode);
-        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
-      } catch (err) {
-        res.writeHead(500, { "content-type": "application/json" }).end(JSON.stringify({ error: "Database error" }));
-      }
-    });
+  // Account and stats API. Returns true when it has handled the request.
+  if (url.pathname.startsWith("/api/")) {
+    await handleApi(req, res, url);
     return;
   }
 
