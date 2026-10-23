@@ -12,6 +12,7 @@ import { renderMapPicker, type MapChoice } from "./mapart.js";
 import { FloatingJoystick, HoldButton } from "./touch.js";
 import { loadRobot } from "./robot.js";
 import { World } from "./world.js";
+import { getDeviceId, loadPlayerStats, savePlayerName, recordMatchResult } from "./stats.js";
 
 let introSkipListener: (() => void) | null = null;
 
@@ -1095,6 +1096,11 @@ function onMatchOver(message: Extract<ServerMessage, { type: "match_over" }>): v
         message.winnerId === state.playerId ? [{ phrase: "you_win" }] : [voicePlayer(message.winnerId), { phrase: "wins" }],
       );
     }
+    // Record match result to database
+    if (state.playerId) {
+      const position = state.ranking.indexOf(state.playerId) + 1;
+      void recordMatchResult(position);
+    }
   }
 
   state.me = null;
@@ -1816,6 +1822,8 @@ function readSavedName(): string {
 function saveName(name: string): void {
   try {
     localStorage.setItem("laser-ring:name", name.trim());
+    // Also save to database if available
+    void savePlayerName(name.trim());
   } catch {
     // Storage can be blocked. The name simply won't be remembered.
   }
