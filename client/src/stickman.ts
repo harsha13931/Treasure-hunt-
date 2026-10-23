@@ -150,6 +150,10 @@ export class Stickman {
   }
 
   /** Kick back from firing: the body jolts away from the muzzle, then settles. */
+  strike(): void {
+    // The stick man has one fall, whichever way it is hit.
+  }
+
   kick(): void {
     this.recoil = 1;
   }

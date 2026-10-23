@@ -1963,10 +1963,14 @@ body.intro .skip-hint {
   background: var(--bg-0);
 }
 
-@media (orientation: portrait) {
-  body.touch .rotate {
-    display: flex;
-  }
+/* Shown by the page (see updateOrientation) only when the phone really is upright, and never when it is dismissed. */
+body.touch.portrait:not(.play-anyway) .rotate {
+  display: flex;
+}
+
+.rotate {
+  flex-direction: column;
+  gap: 18px;
 }
 
 /* ---------------------------------------------------------------------------------------------

@@ -13,6 +13,11 @@ export interface Actor {
   setAlive(alive: boolean): void;
   /** Recoil from firing. */
   kick(): void;
+  /**
+   * A beam is about to hit this figure. `dx` and `dz` are the beam's direction (a unit step) and `distance` is how
+   * far it flew, so the fall that follows can depend on where the shot came from and how hard it landed.
+   */
+  strike(dx: number, dz: number, distance: number): void;
   /** Stands back up, as if never hit. Used by the title scene loop. */
   reset(): void;
   /** The floor gives way under this figure. */

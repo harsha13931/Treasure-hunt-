@@ -319,6 +319,7 @@ export class World {
       if (shots++ < 6) this.onSound?.("shot");
 
       if (beam.hit) {
+        this.actor(beam.hit)?.strike(direction.x, direction.z, length);
         this.effects.bloodBurst(to, direction);
         this.onSound?.("hit");
       } else {

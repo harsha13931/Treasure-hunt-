@@ -47,16 +47,21 @@ export type MapChoice = MapId | "random";
  * Fills `container` with one card per arena, plus a "random" card. `onPick` is called when a card is chosen.
  * Pass `locked` to show the choice without letting it be changed, as guests in a lobby see it.
  */
+/** The buttons of each picker, kept between calls so a tap is never lost to the buttons being rebuilt under a finger. */
+const pickers = new WeakMap<HTMLElement, { buttons: HTMLButtonElement[]; onPick: (choice: MapChoice) => void }>();
+
 export function renderMapPicker(container: HTMLElement, selected: MapChoice, onPick: (choice: MapChoice) => void, locked = false): void {
   const choices: MapChoice[] = [...MAP_IDS, "random"];
-  container.replaceChildren(
-    ...choices.map((choice) => {
+  let picker = pickers.get(container);
+  if (!picker) {
+    const made = { buttons: [] as HTMLButtonElement[], onPick };
+    picker = made;
+    pickers.set(container, made);
+    for (const choice of choices) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "map-card";
       button.setAttribute("role", "radio");
-      button.setAttribute("aria-checked", String(choice === selected));
-      button.disabled = locked;
 
       const art = document.createElementNS(NS, "svg");
       art.setAttribute("viewBox", "0 0 160 90");
@@ -75,8 +80,15 @@ export function renderMapPicker(container: HTMLElement, selected: MapChoice, onP
       caption.append(name, line);
 
       button.append(art, caption);
-      button.addEventListener("click", () => onPick(choice));
-      return button;
-    }),
-  );
+      button.addEventListener("click", () => made.onPick(choice));
+      made.buttons.push(button);
+    }
+    container.replaceChildren(...made.buttons);
+  }
+  picker.onPick = onPick;
+  choices.forEach((choice, index) => {
+    const button = picker.buttons[index];
+    button.setAttribute("aria-checked", String(choice === selected));
+    button.disabled = locked;
+  });
 }

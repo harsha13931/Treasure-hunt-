@@ -218,6 +218,35 @@ const turnLeftButton = new HoldButton(byId("btn-turn-left"));
 const turnRightButton = new HoldButton(byId("btn-turn-right"));
 document.body.classList.toggle("touch", isTouchDevice);
 
+/**
+ * Asks a phone held upright to turn sideways. It looks at the phone itself as well as the size of the page, because a
+ * page shown in a frame (itch.io, for one) can be taller than wide while the phone is sideways. It waits a moment
+ * before showing, so the swing of going fullscreen or turning does not flash it up, and it can be dismissed.
+ */
+let orientationTimer: number | null = null;
+function updateOrientation(): void {
+  const deviceType = screen.orientation?.type ?? "";
+  const upright = isTouchDevice && window.innerHeight > window.innerWidth && !deviceType.startsWith("landscape");
+  if (orientationTimer !== null) clearTimeout(orientationTimer);
+  orientationTimer = null;
+  if (!upright) {
+    document.body.classList.remove("portrait", "play-anyway");
+    return;
+  }
+  orientationTimer = window.setTimeout(() => {
+    orientationTimer = null;
+    const stillType = screen.orientation?.type ?? "";
+    const stillUpright = window.innerHeight > window.innerWidth && !stillType.startsWith("landscape");
+    document.body.classList.toggle("portrait", stillUpright);
+  }, 600);
+}
+window.addEventListener("resize", updateOrientation);
+window.addEventListener("orientationchange", updateOrientation);
+screen.orientation?.addEventListener?.("change", updateOrientation);
+document.addEventListener("fullscreenchange", updateOrientation);
+byId("rotate-dismiss").addEventListener("click", () => document.body.classList.add("play-anyway"));
+updateOrientation();
+
 // ---------- Setup ----------
 
 ui.name.value = readSavedName();
@@ -316,11 +345,17 @@ function soloMap(): MapChoice {
   return forced === "random" || isMapId(forced) ? forced : settings.map;
 }
 
+/** Shows the chosen arena behind the menu, so picking one visibly does something. "Surprise me" leaves the scene alone. */
+function previewMap(choice: MapChoice): void {
+  if (choice !== "random" && state.screen !== "game") world.setMap(choice);
+}
+
 function renderSoloMaps(): void {
   renderMapPicker(ui.soloMaps, soloMap(), (choice) => {
     settings.map = choice;
     saveSettings();
     renderSoloMaps();
+    previewMap(choice);
   });
 }
 renderSoloMaps();
@@ -790,6 +825,7 @@ function onLobby(): void {
     // Joined while a match is running. Watch until the next match starts.
     showScreen("game");
     world.setCharacters([]);
+    showToast("A match is already running. You will play in the next one.");
   }
 }
 
@@ -1212,6 +1248,7 @@ function showScreen(name: ScreenName): void {
   ui.leaveGame.classList.toggle("hidden", name !== "game");
   if (name === "online") ui.menuError.textContent = "";
   if (name === "lobby") renderLobby();
+  if (name === "solo") previewMap(soloMap());
 }
 
 function renderLobby(): void {
@@ -1267,7 +1304,18 @@ function renderLobby(): void {
   ui.playerList.replaceChildren(...slots);
 
   const locked = !isHost || state.isPublic;
-  renderMapPicker(ui.lobbyMaps, state.isPublic ? "random" : state.lobbyMap, (choice) => send({ type: "map", map: choice }), locked);
+  renderMapPicker(
+    ui.lobbyMaps,
+    state.isPublic ? "random" : state.lobbyMap,
+    (choice) => {
+      // Show the choice at once, then tell the server. The next lobby update from it confirms or corrects it.
+      state.lobbyMap = choice;
+      renderLobby();
+      send({ type: "map", map: choice });
+    },
+    locked,
+  );
+  if (!state.isPublic) previewMap(state.lobbyMap);
 
   const total = people + bots;
   ui.start.classList.toggle("hidden", !isHost);

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { clone as cloneRigged } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { BEAM_HEIGHT, MUZZLE_FORWARD, PIT_DEPTH, PLAYER_HEIGHT } from "../../shared/config.js";
+import { facing } from "../../shared/movement.js";
 import type { Actor } from "./actor.js";
 import { colorFor, createLaserPistol, GUN_TIP, makeLabel } from "./stickman.js";
 
@@ -50,6 +51,29 @@ const qa = new THREE.Quaternion();
 const qb = new THREE.Quaternion();
 const qc = new THREE.Quaternion();
 
+/**
+ * How a robot goes down. A hit from the front (or near it) plays the animated fall, turned so the robot topples the way
+ * the beam was travelling. A hit from behind or the side tips the whole body over instead, forward onto its face or
+ * sideways, spinning a little. Close shots hit harder: more knockback, a quicker fall.
+ */
+interface Fall {
+  kind: "clip" | "tilt";
+  time: number;
+  duration: number;
+  /** Turn of the body about the vertical, reached by the end of the fall. */
+  spin: number;
+  /** Tilt axis and how far the body tips (radians). Used by "tilt". */
+  axis: THREE.Vector3;
+  angle: number;
+  /** Knockback in the robot's own space, in meters. */
+  pushX: number;
+  pushZ: number;
+}
+
+const UP = new THREE.Vector3(0, 1, 0);
+const qSpin = new THREE.Quaternion();
+const qTilt = new THREE.Quaternion();
+
 interface Arm {
   upper: THREE.Object3D;
   lower: THREE.Object3D;
@@ -76,6 +100,9 @@ export class Robot implements Actor {
   private plunging = false;
   private plungeDelay = 0;
   private plungeSpeed = 0;
+  /** The beam that is about to hit this robot, added up if several do. */
+  private pending: { x: number; z: number; distance: number } | null = null;
+  private fall: Fall | null = null;
 
   constructor(id: string, name?: string) {
     if (!template) throw new Error("The robot model is not loaded.");
@@ -175,11 +202,114 @@ export class Robot implements Actor {
       this.root.position.y = 0;
       this.root.rotation.z = 0;
       this.aim = 1;
+      this.fall = null;
+      this.pending = null;
+      this.model.quaternion.identity();
+      this.model.position.set(0, 0, 0);
+      this.actions.idle.paused = false;
+      this.actions.walk.paused = false;
       this.actions.death.stop();
       this.fadeTo(this.actions.idle, 0.1);
     } else if (!this.plunging) {
-      this.fadeTo(this.actions.death, 0.12);
+      this.startFall();
     }
+  }
+
+  strike(dx: number, dz: number, distance: number): void {
+    if (this.pending) {
+      this.pending.x += dx;
+      this.pending.z += dz;
+      this.pending.distance = Math.min(this.pending.distance, distance);
+    } else {
+      this.pending = { x: dx, z: dz, distance };
+    }
+  }
+
+  /** Chooses how this robot falls, from the beam that hit it. */
+  private startFall(): void {
+    const impact = this.pending;
+    this.pending = null;
+    let dx = impact?.x ?? 0;
+    let dz = impact?.z ?? 0;
+    let distance = impact?.distance ?? 25;
+    const length = Math.hypot(dx, dz);
+    if (length < 0.01) {
+      // Hit by something with no direction (or two beams that cancel out): any way down will do.
+      const angle = Math.random() * Math.PI * 2;
+      dx = Math.cos(angle);
+      dz = Math.sin(angle);
+      distance = 25;
+    } else {
+      dx /= length;
+      dz /= length;
+    }
+
+    // The beam's direction in the robot's own space: lz along where it faces, lx across.
+    const f = facing(this.root.rotation.y);
+    const lz = dx * f.x + dz * f.z;
+    const lx = dx * f.z - dz * f.x;
+    const strength = THREE.MathUtils.clamp(1 - distance / 50, 0.2, 1);
+    const sideways = (Math.random() < 0.5 ? -1 : 1) * (0.4 + Math.random() * 0.8);
+    const knock = 0.5 + 2.4 * strength;
+
+    if (lz < -0.3) {
+      // Hit from the front: the animated fall, turned to topple along the beam.
+      this.fall = {
+        kind: "clip",
+        time: 0,
+        duration: 0.3,
+        spin: Math.atan2(-lx, -lz),
+        axis: UP,
+        angle: 0,
+        pushX: lx * knock,
+        pushZ: lz * knock,
+      };
+      this.actions.death.timeScale = 0.85 + strength * 0.5 + Math.random() * 0.2;
+      this.fadeTo(this.actions.death, 0.1);
+    } else {
+      // Hit from behind or the side: the whole body tips over the way the beam was going.
+      this.fall = {
+        kind: "tilt",
+        time: 0,
+        duration: 0.95 - 0.4 * strength + Math.random() * 0.15,
+        spin: sideways * (0.5 + strength),
+        axis: new THREE.Vector3(lz, 0, -lx).normalize(),
+        angle: (Math.PI / 2) * (0.94 + Math.random() * 0.08),
+        pushX: lx * knock,
+        pushZ: lz * knock,
+      };
+      this.current.paused = true;
+    }
+  }
+
+  /** Moves the body for the fall chosen by startFall. */
+  private updateFall(dt: number): void {
+    const fall = this.fall;
+    if (!fall) return;
+    fall.time += dt;
+    // The body is shoved along the beam, quickly at first, then it slows to a stop.
+    const slide = 1 - Math.exp(-fall.time * 7);
+    this.model.position.x = fall.pushX * slide;
+    this.model.position.z = fall.pushZ * slide;
+
+    if (fall.kind === "clip") {
+      const turn = Math.min(1, fall.time / fall.duration);
+      this.model.rotation.y = fall.spin * (1 - (1 - turn) * (1 - turn));
+      return;
+    }
+
+    // Tipping over speeds up like anything falling, then bounces a little when it lands.
+    const progress = Math.min(1, fall.time / fall.duration);
+    let angle = fall.angle * progress * progress;
+    if (progress >= 1) {
+      const since = fall.time - fall.duration;
+      angle -= fall.angle * 0.05 * Math.exp(-since * 9) * Math.abs(Math.sin(since * 20));
+    }
+    qSpin.setFromAxisAngle(UP, fall.spin * (1 - (1 - progress) * (1 - progress)));
+    qTilt.setFromAxisAngle(fall.axis, angle);
+    this.model.quaternion.copy(qSpin).multiply(qTilt);
+    // Lying down, the body rests on the floor instead of sinking into it.
+    this.model.position.y = 0.7 * Math.sin(Math.min(angle, Math.PI / 2));
   }
 
   kick(): void {
@@ -202,6 +332,7 @@ export class Robot implements Actor {
 
   update(dt: number): void {
     this.recoil = Math.max(0, this.recoil - dt * 4.5);
+    this.updateFall(dt);
 
     if (this.plunging) {
       if (this.plungeDelay > 0) {
