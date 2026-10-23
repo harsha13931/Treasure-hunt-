@@ -118,8 +118,6 @@ const state = {
   winnerId: null as string | null,
   /** When set, the match starts as soon as the room is created. This is how Solo vs Bots works. */
   pendingStart: null as SoloSettings | null,
-  /** True while the current match is solo-vs-bots practice, which does not count toward account stats. */
-  isSolo: false,
   /** The last solo setup, so Play Again can repeat it. */
   lastSolo: null as SoloSettings | null,
   showResults: false,
@@ -423,7 +421,6 @@ ui.soloStart.addEventListener("click", () => {
   const solo: SoloSettings = { bots: Number(ui.soloBots.value), difficulty, map: soloMap() };
   state.pendingStart = solo;
   state.lastSolo = solo;
-  state.isSolo = true;
   enterLandscape();
   connect(
     (socket) => send({ type: "create", name: playerName() }, socket),
@@ -437,7 +434,6 @@ ui.quick.addEventListener("click", () => {
   ui.menuError.textContent = "";
   state.pendingStart = null;
   state.lastSolo = null;
-  state.isSolo = false;
   enterLandscape();
   connect((socket) => send({ type: "quick", name: playerName() }, socket));
 });
@@ -446,7 +442,6 @@ ui.create.addEventListener("click", () => {
   ui.menuError.textContent = "";
   state.pendingStart = null;
   state.lastSolo = null;
-  state.isSolo = false;
   enterLandscape();
   connect((socket) => send({ type: "create", name: playerName() }, socket));
 });
@@ -460,7 +455,6 @@ ui.join.addEventListener("click", () => {
   ui.menuError.textContent = "";
   state.pendingStart = null;
   state.lastSolo = null;
-  state.isSolo = false;
   enterLandscape();
   connect((socket) => send({ type: "join", code, name: playerName() }, socket));
 });
@@ -1331,8 +1325,8 @@ function onMatchOver(message: Extract<ServerMessage, { type: "match_over" }>): v
         message.winnerId === state.playerId ? [{ phrase: "you_win" }] : [voicePlayer(message.winnerId), { phrase: "wins" }],
       );
     }
-    // Record the result to the player's account. Only counts online matches, not solo-vs-bots practice.
-    if (state.playerId && !state.isSolo && state.ranking.includes(state.playerId)) {
+    // Record the result to the player's account, so a win shows up on their profile and the leaderboard.
+    if (state.playerId && state.ranking.includes(state.playerId)) {
       const position = state.ranking.indexOf(state.playerId) + 1;
       void recordMatch(position);
     }
